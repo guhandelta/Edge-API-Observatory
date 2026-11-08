@@ -12,6 +12,7 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 - [x] Enforce 100% per-file statements, branches, functions, and lines for production TypeScript in Worker and UI suites; run the gate in CI.
 - [x] Measure browser `POST /api/probes` round trip in the current session and Worker handler time through the primary D1 commit; verify the D1-inclusive interval and maintain 100% coverage.
 - [x] Attach request IDs to custom spans, store probe trace IDs, and add an investigation view for app timings and Cloudflare fetch/D1 spans with explicit missing-trace states.
+- [x] Save reproducible experiment scenario, endpoint, Worker version, sample count, and time window; alternate request order and report p50/p95 with measured counts and small-sample labels.
 - [x] Add controlled success, delay, and error fixtures; verify all three Worker probe paths and a browser comparison against the error fixture locally.
 - [x] Document a controlled-delay investigation with measured batches, an architecture diagram, and screenshots.
 - [x] Run typecheck, tests, build, local migration verification, and browser smoke test with persistence after refresh.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ProbeRun } from "../shared/contracts";
-import { median, statusBucket, summarizeRuns } from "../src/metrics";
+import type { ExperimentSample, ProbeRun } from "../shared/contracts";
+import { experimentPercentiles, median, p95, statusBucket, summarizeRuns } from "../src/metrics";
 
 /** Build complete records so summary tests use the same contract as the API. */
 function run(id: string, direct: number | null, worker: number, status: number | null,
@@ -24,6 +24,19 @@ function run(id: string, direct: number | null, worker: number, status: number |
 }
 
 describe("dashboard metrics", () => {
+  it("uses the nearest observed rank for p95 and excludes missing experiment durations", () => {
+    expect(p95([])).toBeNull();
+    expect(p95([40, 10, 30, 20, 50])).toBe(50);
+    const samples = [10, 30, null, 20].map((durationMs, ordinal) => ({
+      id: String(ordinal), experimentId: "e", ordinal, pairIndex: Math.floor(ordinal / 2),
+      requestMode: ordinal === 1 ? "worker_proxy" : "browser_direct",
+      observedAt: "2026-11-08T00:00:00Z", durationMs, status: 200,
+      errorCategory: "none", traceId: null,
+    })) as ExperimentSample[];
+    expect(experimentPercentiles(samples, "browser_direct")).toEqual({ count: 2, p50: 15, p95: 20 });
+    expect(experimentPercentiles(samples, "worker_proxy")).toEqual({ count: 1, p50: 30, p95: 30 });
+    expect(experimentPercentiles([], "worker_proxy")).toEqual({ count: 0, p50: null, p95: null });
+  });
   it("uses measured sample counts and excludes failures from success rate", () => {
     const summary = summarizeRuns([
       run("one", 110, 100, 200, "none"),

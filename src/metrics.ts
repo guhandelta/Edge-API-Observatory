@@ -1,4 +1,4 @@
-import type { ProbeRun } from "../shared/contracts";
+import type { ExperimentSample, ProbeRun, RequestMode } from "../shared/contracts";
 
 /** Buckets describe Worker outcomes; browser status remains visible per run. */
 export const STATUS_BUCKETS = ["2xx", "3xx", "4xx", "5xx", "Fetch error"] as const;
@@ -27,6 +27,20 @@ export function median(values: number[]): number | null {
   return sorted.length % 2 === 0
     ? (sorted[middle - 1] + sorted[middle]) / 2
     : sorted[middle];
+}
+
+/** Nearest-rank p95 is the observed upper-tail sample, not an interpolated estimate. */
+export function p95(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.ceil(sorted.length * 0.95) - 1];
+}
+
+/** Count measured observations separately for each experiment request path. */
+export function experimentPercentiles(samples: ExperimentSample[], mode: RequestMode) {
+  const values = samples.filter((sample) => sample.requestMode === mode && sample.durationMs !== null)
+    .map((sample) => sample.durationMs as number);
+  return { count: values.length, p50: median(values), p95: p95(values) };
 }
 
 /** Classify a Worker response, giving transport failures priority over HTTP status. */

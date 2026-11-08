@@ -119,3 +119,10 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Added a run-level investigation view and a bounded Worker lookup for Cloudflare fetch and D1 span durations. It distinguishes unavailable IDs, missing lookup configuration, and no stored trace, which can result from sampling, ingestion delay, or expiry.
 - Added Worker integration and React DOM cases for correlation, platform spans, missing traces, lookup errors, and limits. Verified typecheck, 100% per-file statements/branches/functions/lines in both suites, build, and local migration and route smoke tests. A local probe stored a nonzero trace ID; the local trace explorer showed the matching `api.probe` span and its child fetch/D1 spans.
 - Release impact: trace comparison is implemented locally; live Cloudflare telemetry retrieval remains a production release gate and requires account-scoped secrets.
+
+### 2026-11-08 — `feat: add reproducible interleaved experiments` (this commit)
+
+- Added durable experiment and ordered sample tables. The Worker records approved scenario, endpoint, deployment version, requested pair count, and start/end window; it enforces direct/Worker then Worker/direct order and closes partial runs.
+- Added experiment controls, saved-experiment loading, measured counts, p50, nearest-rank p95, and a clear warning that the three- and five-sample tails are exploratory.
+- Added Worker D1 integration and React DOM tests for ordered samples, metadata, incomplete runs, validation, reloads, and percentile display. Verified 30 Worker and 29 UI tests with 100% per-file statement, branch, function, and line coverage; typecheck, build, migration, and local route smoke test pass. A local six-sample run persisted its version and alternating order. A subsequent browser run hit the shared rate limit, closed with four samples, and displayed partial p50/p95 counts after reload.
+- Release impact: repeatable experiment records are available locally. Remote D1 migration, deployment, and public verification remain open.

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { usableTraceId } from "../worker/index";
 
 /** Use the real D1 binding while controlling the rate-limit decision per test. */
-function testEnv(allowed = true, traceConfig?: { accountId?: string; token?: string }): Parameters<typeof worker.fetch>[1] {
+function testEnv(allowed = true, traceConfig?: { accountId?: string; token?: string; version?: string }): Parameters<typeof worker.fetch>[1] {
   const bindings = env as typeof env & { DB: D1Database };
   return {
     DB: bindings.DB,
@@ -12,6 +12,7 @@ function testEnv(allowed = true, traceConfig?: { accountId?: string; token?: str
     } as RateLimit,
     CLOUDFLARE_ACCOUNT_ID: traceConfig?.accountId,
     CLOUDFLARE_OBSERVABILITY_TOKEN: traceConfig?.token,
+    CF_VERSION_METADATA: traceConfig?.version ? { id: traceConfig.version } as WorkerVersionMetadata : undefined,
   };
 }
 
@@ -29,9 +30,94 @@ function validBody() {
   return { targetId: "sample-post", directDurationMs: 12, directStatus: 200, directError: null };
 }
 
+/** Exercise experiment routes with the same bounded JSON shape as probes. */
+function experimentRequest(path: string, body?: unknown): Request {
+  return new Request(`https://example.test/api/experiments${path}`, {
+    method: "POST",
+    ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Worker API", () => {
+  it("stores a versioned experiment with alternating direct and Worker samples", async () => {
+    const empty = await worker.fetch(new Request("https://example.test/api/experiments"), testEnv());
+    expect(await empty.json()).toEqual([]);
+    const started = await worker.fetch(experimentRequest("", { ...validBody(), targetId: "demo-success", requestedPairs: 3 }),
+      testEnv(true, { version: "deployment-123" }));
+    expect(started.status).toBe(201);
+    const experiment = await started.json() as { id: string; scenario: string; deploymentVersion: string; windowStartedAt: string };
+    expect(experiment.scenario).toBe("immediate-success");
+    expect(experiment.deploymentVersion).toBe("deployment-123");
+    expect(experiment.windowStartedAt).toMatch(/^2026/);
+    const id = experiment.id;
+    const direct = (body: unknown) => experimentRequest(`/${id}/direct`, body);
+    const workerRequest = () => experimentRequest(`/${id}/worker`);
+    let fetchCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      fetchCount += 1;
+      if (fetchCount === 2) return new Response("error", { status: 503 });
+      if (fetchCount === 3) throw new TypeError("offline");
+      return new Response("ok");
+    }));
+
+    expect((await worker.fetch(workerRequest(), testEnv())).status).toBe(409);
+    expect((await worker.fetch(direct(validBody()), testEnv(false))).status).toBe(429);
+    expect((await worker.fetch(direct({ ...validBody(), targetId: "sample-user" }), testEnv())).status).toBe(400);
+    expect((await worker.fetch(experimentRequest(`/${id}/direct`), testEnv())).status).toBe(415);
+    const samples = [];
+    samples.push(await (await worker.fetch(direct({ ...validBody(), targetId: "demo-success" }), testEnv())).json());
+    expect((await worker.fetch(direct({ ...validBody(), targetId: "demo-success" }), testEnv())).status).toBe(409);
+    samples.push(await (await worker.fetch(workerRequest(), testEnv())).json());
+    samples.push(await (await worker.fetch(workerRequest(), testEnv())).json());
+    samples.push(await (await worker.fetch(direct({ ...validBody(), targetId: "demo-success",
+      directDurationMs: null, directStatus: null, directError: "timeout" }), testEnv())).json());
+    samples.push(await (await worker.fetch(direct({ ...validBody(), targetId: "demo-success",
+      directDurationMs: null, directStatus: null, directError: "cors_or_network_error" }), testEnv())).json());
+    samples.push(await (await worker.fetch(workerRequest(), testEnv())).json());
+    expect(samples.map((sample) => (sample as { requestMode: string }).requestMode)).toEqual([
+      "browser_direct", "worker_proxy", "worker_proxy", "browser_direct", "browser_direct", "worker_proxy",
+    ]);
+    expect(samples.map((sample) => (sample as { pairIndex: number }).pairIndex)).toEqual([0, 0, 1, 1, 2, 2]);
+    expect(samples.map((sample) => (sample as { errorCategory: string }).errorCategory)).toEqual([
+      "none", "none", "http_error", "timeout", "cors_or_network_error", "network_error",
+    ]);
+    expect((await worker.fetch(direct({ ...validBody(), targetId: "demo-success" }), testEnv())).status).toBe(409);
+
+    const before = await worker.fetch(new Request(`https://example.test/api/experiments/${id}`), testEnv());
+    expect((await before.json() as { samples: unknown[]; windowEndedAt: string | null }).samples).toHaveLength(6);
+    const finished = await worker.fetch(experimentRequest(`/${id}/complete`), testEnv());
+    const result = await finished.json() as { samples: unknown[]; windowEndedAt: string };
+    expect(result.samples).toHaveLength(6);
+    expect(result.windowEndedAt).toMatch(/^2026/);
+    const again = await worker.fetch(experimentRequest(`/${id}/complete`), testEnv());
+    expect((await again.json() as { windowEndedAt: string }).windowEndedAt).toBe(result.windowEndedAt);
+    expect((await worker.fetch(workerRequest(), testEnv())).status).toBe(409);
+    const index = await worker.fetch(new Request("https://example.test/api/experiments"), testEnv());
+    const listed = await index.json() as Array<{ id: string; samples: unknown[] }>;
+    expect(listed[0]).toMatchObject({ id, samples: [] });
+  });
+
+  it("validates experiment creation and missing IDs, and fixes scenario labels", async () => {
+    expect((await worker.fetch(experimentRequest("", {}), testEnv())).status).toBe(400);
+    expect((await worker.fetch(experimentRequest("", { ...validBody(), requestedPairs: 2 }), testEnv())).status).toBe(400);
+    expect((await worker.fetch(experimentRequest("", { ...validBody(), requestedPairs: 3 }), testEnv(false))).status).toBe(429);
+    const created = [];
+    for (const targetId of ["demo-delay", "demo-error", "sample-user"]) {
+      const response = await worker.fetch(experimentRequest("", { ...validBody(), targetId, requestedPairs: 5 }), testEnv());
+      created.push(await response.json() as { scenario: string; deploymentVersion: string; requestedPairs: number });
+    }
+    expect(created.map((item) => item.scenario)).toEqual(["750ms-delay", "http-503", "external-baseline"]);
+    expect(created[0]).toMatchObject({ deploymentVersion: "local-development", requestedPairs: 5 });
+    expect((await worker.fetch(new Request("https://example.test/api/experiments/bad"), testEnv())).status).toBe(400);
+    const missing = crypto.randomUUID();
+    expect((await worker.fetch(new Request(`https://example.test/api/experiments/${missing}`), testEnv())).status).toBe(404);
+    expect((await worker.fetch(experimentRequest(`/${missing}/direct`, validBody()), testEnv())).status).toBe(404);
+    expect((await worker.fetch(experimentRequest(`/${missing}/complete`), testEnv())).status).toBe(404);
+    expect((await worker.fetch(experimentRequest(`/${missing}/unknown`), testEnv())).status).toBe(404);
+    expect((await worker.fetch(new Request(`https://example.test/api/experiments/${missing}/worker`), testEnv())).status).toBe(404);
+  });
   it("normalizes disabled and usable trace IDs", () => {
     expect(usableTraceId("0".repeat(32))).toBeNull();
     expect(usableTraceId("a".repeat(32))).toBe("a".repeat(32));

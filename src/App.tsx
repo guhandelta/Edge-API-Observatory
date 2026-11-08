@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { TARGETS, type CreateProbeRequest, type ProbeRun, type TraceInvestigation } from "../shared/contracts";
-import { STATUS_BUCKETS, summarizeRuns } from "./metrics";
+import { TARGETS, type CreateProbeRequest, type Experiment, type ProbeRun, type TraceInvestigation } from "../shared/contracts";
+import { experimentPercentiles, STATUS_BUCKETS, summarizeRuns } from "./metrics";
 import { applyTheme, type Theme } from "./theme";
 
 /** Format a measured duration without suggesting sub-millisecond precision. */
@@ -106,6 +106,11 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
   const [investigation, setInvestigation] = useState<TraceInvestigation | null>(null);
   const [investigationError, setInvestigationError] = useState<string | null>(null);
   const [investigating, setInvestigating] = useState(false);
+  const [experiment, setExperiment] = useState<Experiment | null>(null);
+  const [savedExperiments, setSavedExperiments] = useState<Experiment[]>([]);
+  const [experimentRunning, setExperimentRunning] = useState(false);
+  const [experimentError, setExperimentError] = useState<string | null>(null);
+  const [experimentProgress, setExperimentProgress] = useState(0);
   const target = TARGETS.find((item) => item.id === targetId)!;
 
   /** Switch the visual palette without interrupting a running probe. */
@@ -130,6 +135,8 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
   const summary = useMemo(() => summarizeRuns(selectedRuns), [selectedRuns]);
   const visibleBatch = lastBatch?.targetId === targetId ? lastBatch : null;
   const batchSummary = visibleBatch ? summarizeRuns(visibleBatch.runs) : null;
+  const directExperiment = experiment ? experimentPercentiles(experiment.samples, "browser_direct") : null;
+  const workerExperiment = experiment ? experimentPercentiles(experiment.samples, "worker_proxy") : null;
 
   /** Run each browser/Worker pair sequentially against one fixed endpoint. */
   async function runBatch() {
@@ -181,6 +188,66 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
     }
   }
 
+  /** Alternate request order across pairs, leaving a durable record if interrupted. */
+  async function runExperiment() {
+    setExperimentRunning(true);
+    setExperimentError(null);
+    setExperimentProgress(0);
+    let id: string | null = null;
+    try {
+      const created = await readApi<Experiment>(await fetch("/api/experiments", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetId, requestedPairs: batchSize,
+          directDurationMs: null, directStatus: null, directError: null }),
+      }));
+      id = created.id;
+      setExperiment(created);
+      for (let ordinal = 0; ordinal < batchSize * 2; ordinal += 1) {
+        const directFirst = Math.floor(ordinal / 2) % 2 === 0;
+        const direct = ordinal % 2 === 0 ? directFirst : !directFirst;
+        const response = direct
+          ? await fetch(`/api/experiments/${id}/direct`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targetId, ...await measureDirect(target.url) } satisfies CreateProbeRequest),
+          })
+          : await fetch(`/api/experiments/${id}/worker`, { method: "POST" });
+        await readApi(response);
+        setExperimentProgress(ordinal + 1);
+      }
+    } catch (cause) {
+      setExperimentError(cause instanceof Error ? cause.message : "Experiment failed.");
+    } finally {
+      if (id) {
+        try {
+          const completed = await readApi<Experiment>(await fetch(`/api/experiments/${id}/complete`, { method: "POST" }));
+          setExperiment(completed);
+          setSavedExperiments((current) => [completed, ...current].slice(0, 20));
+        } catch (cause) {
+          setExperimentError(cause instanceof Error ? cause.message : "Could not close experiment window.");
+        }
+      }
+      setExperimentRunning(false);
+    }
+  }
+
+  /** Refresh the durable experiment index after a page reload. */
+  async function loadExperiments() {
+    try {
+      setSavedExperiments(await readApi<Experiment[]>(await fetch("/api/experiments")));
+    } catch (cause) {
+      setExperimentError(cause instanceof Error ? cause.message : "Could not load experiments.");
+    }
+  }
+
+  /** Open one saved experiment with its ordered samples. */
+  async function openExperiment(id: string) {
+    try {
+      setExperiment(await readApi<Experiment>(await fetch(`/api/experiments/${id}`)));
+    } catch (cause) {
+      setExperimentError(cause instanceof Error ? cause.message : "Could not open experiment.");
+    }
+  }
+
   return (
     <main className="page">
       <header className="topbar">
@@ -209,21 +276,40 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
         </div>
         <div className="control-fields">
           <div className="control-field"><label htmlFor="target">Target API</label>
-            <select id="target" value={targetId} onChange={(event) => { setTargetId(event.target.value); setLastBatch(null); }} disabled={running}>
+            <select id="target" value={targetId} onChange={(event) => { setTargetId(event.target.value); setLastBatch(null); }} disabled={running || experimentRunning}>
               {TARGETS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </div>
           <div className="control-field"><label htmlFor="batch-size">Pairs to run</label>
-            <select id="batch-size" value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value) as 3 | 5)} disabled={running}>
+            <select id="batch-size" value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value) as 3 | 5)} disabled={running || experimentRunning}>
               <option value={3}>3 pairs</option>
               <option value={5}>5 pairs</option>
             </select>
           </div>
-          <button onClick={runBatch} disabled={running}>{running ? `Running ${progress}/${batchSize}…` : `Run ${batchSize} pairs →`}</button>
+          <button onClick={runBatch} disabled={running || experimentRunning}>{running ? `Running ${progress}/${batchSize}…` : `Run ${batchSize} pairs →`}</button>
+          <button onClick={runExperiment} disabled={running || experimentRunning}>{experimentRunning ? `Experiment ${experimentProgress}/${batchSize * 2}…` : "Run experiment"}</button>
         </div>
       </section>
 
       {error && <div className="error" role="alert">{error}</div>}
+
+      <section className="panel experiment-panel" aria-label="Reproducible experiments">
+        <div className="section-head"><div><p className="section-kicker">EXPERIMENTS</p><h2>Reproducible experiments</h2></div><button type="button" onClick={loadExperiments}>Load saved experiments</button></div>
+        <p className="muted">Each pair alternates order: direct → Worker, then Worker → direct. p95 uses the nearest observed rank; fewer than 20 measured samples make tail estimates exploratory.</p>
+        {experimentError && <p role="alert">{experimentError}</p>}
+        {savedExperiments.length > 0 && <div className="experiment-list">{savedExperiments.map((item) => <button type="button" key={item.id} onClick={() => openExperiment(item.id)}>{item.scenario} · {item.windowStartedAt}</button>)}</div>}
+        {experiment && directExperiment && workerExperiment && <>
+          <p><strong>{experiment.scenario}</strong> · {TARGETS.find((item) => item.id === experiment.endpointId)!.name}</p>
+          <p>Deployment version: <code>{experiment.deploymentVersion}</code></p>
+          <p>Time window: {experiment.windowStartedAt} → {experiment.windowEndedAt ?? "In progress"}</p>
+          <p>Requested: {experiment.requestedPairs} pairs · Stored: {experiment.samples.length} samples</p>
+          <div className="trace-comparison">
+            <div>Browser direct: p50 {formatMs(directExperiment.p50)} · p95 {formatMs(directExperiment.p95)} · n={directExperiment.count}</div>
+            <div>Worker proxy: p50 {formatMs(workerExperiment.p50)} · p95 {formatMs(workerExperiment.p95)} · n={workerExperiment.count}</div>
+          </div>
+          <p className="sample-note">Small sample: p95 is exploratory with fewer than 20 measured samples per mode.</p>
+        </>}
+      </section>
 
       {visibleBatch && batchSummary && <section className="panel batch-result" aria-label="Last batch median comparison">
         <div className="batch-heading"><div><p className="section-kicker">LATEST BATCH</p><h2>{target.name} · {batchSummary.comparisons}/{visibleBatch.requested} pairs</h2></div><span className="sample-badge">Small sample · n &lt; 10</span></div>

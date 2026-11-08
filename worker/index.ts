@@ -2,6 +2,8 @@ import { tracing } from "cloudflare:workers";
 import {
   TARGETS,
   type CreateProbeRequest,
+  type Experiment,
+  type ExperimentSample,
   type ProbeErrorCategory,
   type ProbeRun,
   type ProbeSample,
@@ -18,6 +20,7 @@ interface Env {
   /** Optional read path for account telemetry; never expose this token to the browser. */
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_OBSERVABILITY_TOKEN?: string;
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
 
 /** Keep upstream probes short so one dashboard action cannot tie up a Worker. */
@@ -399,6 +402,147 @@ async function listHistory(url: URL, env: Env): Promise<Response> {
   return json(result.results.map(mapSample));
 }
 
+/** Map D1 experiment rows without letting browser input claim a deployment version. */
+function mapExperiment(row: Record<string, unknown>, samples: ExperimentSample[] = []): Experiment {
+  return {
+    id: String(row.id),
+    scenario: String(row.scenario),
+    endpointId: String(row.endpoint_id),
+    deploymentVersion: String(row.deployment_version),
+    requestedPairs: row.requested_pairs as 3 | 5,
+    windowStartedAt: String(row.window_started_at),
+    windowEndedAt: row.window_ended_at as string | null,
+    samples,
+  };
+}
+
+/** Preserve order and mode in every stored experiment observation. */
+function mapExperimentSample(row: Record<string, unknown>): ExperimentSample {
+  return {
+    id: String(row.id),
+    experimentId: String(row.experiment_id),
+    ordinal: Number(row.ordinal),
+    pairIndex: Number(row.pair_index),
+    requestMode: row.request_mode as RequestMode,
+    observedAt: String(row.observed_at),
+    durationMs: row.duration_ms as number | null,
+    status: row.status as number | null,
+    errorCategory: row.error_category as ProbeSampleErrorCategory,
+    traceId: row.trace_id as string | null,
+  };
+}
+
+/** Resolve the fixed scenario from the approved endpoint rather than trusting a label. */
+function scenarioFor(endpointId: string): string {
+  if (endpointId === "demo-success") return "immediate-success";
+  if (endpointId === "demo-delay") return "750ms-delay";
+  if (endpointId === "demo-error") return "http-503";
+  return "external-baseline";
+}
+
+/** Every pair reverses order to reduce time drift favoring one path. */
+function expectedExperimentMode(ordinal: number): RequestMode {
+  return (Math.floor(ordinal / 2) + ordinal) % 2 === 0 ? "browser_direct" : "worker_proxy";
+}
+
+/** Start a durable experiment before sending any samples. */
+async function createExperiment(request: Request, env: Env): Promise<Response> {
+  const parsed = await readProbeBody(request);
+  if ("error" in parsed) return json({ error: parsed.error }, parsed.status);
+  const input = parsed.input as CreateProbeRequest & { requestedPairs?: unknown };
+  if (input.requestedPairs !== 3 && input.requestedPairs !== 5) {
+    return json({ error: "requestedPairs must be 3 or 5." }, 400);
+  }
+  const allowance = await env.PROBE_RATE_LIMITER.limit({ key: "public-experiment-starts" });
+  if (!allowance.success) return json({ error: "Experiment limit reached." }, 429);
+  const id = crypto.randomUUID();
+  const started = new Date().toISOString();
+  const version = env.CF_VERSION_METADATA?.id ?? "local-development";
+  await env.DB.prepare(
+    "INSERT INTO experiments (id, scenario, endpoint_id, deployment_version, requested_pairs, window_started_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).bind(id, scenarioFor(input.targetId), input.targetId, version, input.requestedPairs, started).run();
+  return json({ id, scenario: scenarioFor(input.targetId), endpointId: input.targetId,
+    deploymentVersion: version, requestedPairs: input.requestedPairs,
+    windowStartedAt: started, windowEndedAt: null, samples: [] } satisfies Experiment, 201);
+}
+
+/** Fetch one experiment with its independently ordered observations. */
+async function getExperiment(id: string, env: Env): Promise<Experiment | null> {
+  const row = await env.DB.prepare("SELECT * FROM experiments WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  if (!row) return null;
+  const samples = await env.DB.prepare(
+    "SELECT * FROM experiment_samples WHERE experiment_id = ? ORDER BY ordinal ASC",
+  ).bind(id).all<Record<string, unknown>>();
+  return mapExperiment(row, samples.results.map(mapExperimentSample));
+}
+
+/** Append one direct or Worker sample in the fixed alternating order. */
+async function addExperimentSample(request: Request, env: Env, id: string, mode: RequestMode): Promise<Response> {
+  const experiment = await getExperiment(id, env);
+  if (!experiment) return json({ error: "Experiment not found." }, 404);
+  if (experiment.windowEndedAt) return json({ error: "Experiment is complete." }, 409);
+  const ordinal = experiment.samples.length;
+  if (ordinal >= experiment.requestedPairs * 2 || expectedExperimentMode(ordinal) !== mode) {
+    return json({ error: "Sample is out of sequence." }, 409);
+  }
+  const allowance = await env.PROBE_RATE_LIMITER.limit({ key: "public-experiment-samples" });
+  if (!allowance.success) return json({ error: "Experiment sample limit reached." }, 429);
+
+  let durationMs: number | null;
+  let status: number | null;
+  let category: ProbeSampleErrorCategory;
+  let traceId: string | null = null;
+  if (mode === "browser_direct") {
+    const parsed = await readProbeBody(request);
+    if ("error" in parsed) return json({ error: parsed.error }, parsed.status);
+    if (parsed.input.targetId !== experiment.endpointId) return json({ error: "Target does not match experiment." }, 400);
+    durationMs = parsed.input.directDurationMs;
+    status = parsed.input.directStatus;
+    category = parsed.input.directError === "timeout" ? "timeout"
+      : parsed.input.directError ? "cors_or_network_error" : errorCategory(status, null);
+  } else {
+    const target = TARGETS.find((item) => item.id === experiment.endpointId)!;
+    const upstream = await tracing.enterSpan("api.experiment_probe", async (span) => {
+      span.setAttribute("experiment.id", id);
+      traceId = usableTraceId(span.spanContext().traceId);
+      return probeUpstream(new URL(target.url, request.url).href);
+    });
+    durationMs = upstream.durationMs;
+    status = upstream.status;
+    category = errorCategory(status, upstream.error);
+  }
+  const sample: ExperimentSample = {
+    id: crypto.randomUUID(), experimentId: id, ordinal, pairIndex: Math.floor(ordinal / 2),
+    requestMode: mode, observedAt: new Date().toISOString(), durationMs, status,
+    errorCategory: category, traceId,
+  };
+  await env.DB.prepare(
+    `INSERT INTO experiment_samples (id, experiment_id, ordinal, pair_index, request_mode,
+     observed_at, duration_ms, status, error_category, trace_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(sample.id, id, ordinal, sample.pairIndex, mode, sample.observedAt,
+    durationMs, status, category, traceId).run();
+  return json(sample, 201);
+}
+
+/** Close the time window even if a browser run stopped partway through. */
+async function completeExperiment(id: string, env: Env): Promise<Response> {
+  const experiment = await getExperiment(id, env);
+  if (!experiment) return json({ error: "Experiment not found." }, 404);
+  if (!experiment.windowEndedAt) {
+    await env.DB.prepare("UPDATE experiments SET window_ended_at = ? WHERE id = ?")
+      .bind(new Date().toISOString(), id).run();
+  }
+  return json((await getExperiment(id, env))!);
+}
+
+/** List recent experiment metadata; detail requests include individual samples. */
+async function listExperiments(env: Env): Promise<Response> {
+  const result = await env.DB.prepare(
+    "SELECT * FROM experiments ORDER BY window_started_at DESC LIMIT 20",
+  ).all<Record<string, unknown>>();
+  return json(result.results.map((row) => mapExperiment(row)));
+}
+
 /** The Worker owns only API routes; Vite/Workers Assets serve the React app. */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -420,6 +564,22 @@ export default {
       }
       if (url.pathname === "/api/history" && request.method === "GET") {
         return await listHistory(url, env);
+      }
+      if (url.pathname === "/api/experiments" && request.method === "GET") return listExperiments(env);
+      if (url.pathname === "/api/experiments" && request.method === "POST") return createExperiment(request, env);
+      if (url.pathname.startsWith("/api/experiments/")) {
+        const parts = url.pathname.slice("/api/experiments/".length).split("/");
+        const id = parts[0];
+        if (!/^[0-9a-f-]{36}$/.test(id)) return json({ error: "Invalid experiment ID." }, 400);
+        if (parts.length === 1 && request.method === "GET") {
+          const experiment = await getExperiment(id, env);
+          return experiment ? json(experiment) : json({ error: "Experiment not found." }, 404);
+        }
+        if (parts.length === 2 && request.method === "POST") {
+          if (parts[1] === "direct") return addExperimentSample(request, env, id, "browser_direct");
+          if (parts[1] === "worker") return addExperimentSample(request, env, id, "worker_proxy");
+          if (parts[1] === "complete") return completeExperiment(id, env);
+        }
       }
       if (url.pathname.startsWith("/api/investigations/") && request.method === "GET") {
         const id = url.pathname.slice("/api/investigations/".length);

@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProbeRun } from "../../shared/contracts";
+import type { Experiment, ExperimentSample, ProbeRun, RequestMode } from "../../shared/contracts";
 import App from "../../src/App";
 
 /** Match the persisted API shape so dashboard tests exercise the real contract. */
@@ -25,6 +25,20 @@ function run(id: string, overrides: Partial<ProbeRun> = {}): ProbeRun {
   };
 }
 
+/** Keep experiment UI fixtures aligned with the durable API shape. */
+function experiment(samples: ExperimentSample[] = [], ended: string | null = "2026-11-08T12:01:00Z"): Experiment {
+  return { id: "experiment-id", scenario: "immediate-success", endpointId: "demo-success",
+    deploymentVersion: "version-abc", requestedPairs: 3,
+    windowStartedAt: "2026-11-08T12:00:00Z", windowEndedAt: ended, samples };
+}
+
+/** One ordered direct or Worker observation for percentile display. */
+function experimentSample(ordinal: number, mode: RequestMode, durationMs: number | null): ExperimentSample {
+  return { id: String(ordinal), experimentId: "experiment-id", ordinal,
+    pairIndex: Math.floor(ordinal / 2), requestMode: mode, observedAt: "2026-11-08T12:00:01Z",
+    durationMs, status: 200, errorCategory: "none", traceId: null };
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -32,6 +46,123 @@ afterEach(() => {
 });
 
 describe("dashboard integration", () => {
+  it("runs, reloads, and reports an interleaved versioned experiment", async () => {
+    const samples = [
+      experimentSample(0, "browser_direct", 10), experimentSample(1, "worker_proxy", 5),
+      experimentSample(2, "worker_proxy", 15), experimentSample(3, "browser_direct", 20),
+      experimentSample(4, "browser_direct", 30), experimentSample(5, "worker_proxy", 25),
+    ];
+    let sampleIndex = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/probes") return Response.json([]);
+      if (url === "/api/demo/success") return Response.json({ ok: true });
+      if (url === "/api/experiments" && init?.method === "POST") return Response.json(experiment([], null), { status: 201 });
+      if (url === "/api/experiments" && !init) return Response.json([experiment(samples)]);
+      if (url === "/api/experiments/experiment-id") return Response.json(experiment(samples));
+      if (url.endsWith("/complete")) return Response.json(experiment(samples));
+      if (url.endsWith("/direct") || url.endsWith("/worker")) return Response.json(samples[sampleIndex++], { status: 201 });
+      throw new Error(`Unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App initialTheme="light" />);
+    await screen.findByText("No Worker results for this endpoint yet.");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Target API" }), "demo-success");
+    await user.click(screen.getByRole("button", { name: "Run experiment" }));
+    const panel = screen.getByRole("region", { name: "Reproducible experiments" });
+    expect(await within(panel).findByText(/Deployment version:/)).toBeTruthy();
+    expect(await within(panel).findByText(/Stored: 6 samples/)).toBeTruthy();
+    expect(within(panel).getByText(/Browser direct: p50 20 ms · p95 30 ms · n=3/)).toBeTruthy();
+    expect(within(panel).getByText(/Worker proxy: p50 15 ms · p95 25 ms · n=3/)).toBeTruthy();
+    expect(within(panel).getByText(/Small sample: p95 is exploratory/)).toBeTruthy();
+    const order = fetchMock.mock.calls.map(([input]) => String(input)).filter((url) =>
+      url.endsWith("/direct") || url.endsWith("/worker"));
+    expect(order).toEqual([
+      "/api/experiments/experiment-id/direct", "/api/experiments/experiment-id/worker",
+      "/api/experiments/experiment-id/worker", "/api/experiments/experiment-id/direct",
+      "/api/experiments/experiment-id/direct", "/api/experiments/experiment-id/worker",
+    ]);
+    await user.click(screen.getByRole("button", { name: "Load saved experiments" }));
+    await user.click(await within(panel).findByRole("button", { name: /immediate-success · 2026/ }));
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/experiments/experiment-id")).toBe(true);
+  });
+
+  it("closes a partial experiment and reports missing measurements", async () => {
+    let sampleCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/probes") return Response.json([]);
+      if (url === "/api/demo/success") return Response.json({ ok: true });
+      if (url === "/api/experiments" && init?.method === "POST") return Response.json(experiment([], null), { status: 201 });
+      if (url.endsWith("/direct")) { sampleCount += 1; return Response.json(experimentSample(0, "browser_direct", 10), { status: 201 }); }
+      if (url.endsWith("/worker")) return Response.json({ error: "Sample limit reached" }, { status: 429 });
+      if (url.endsWith("/complete")) return Response.json(experiment([experimentSample(0, "browser_direct", 10)]));
+      throw new Error(`Unexpected ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<App initialTheme="light" />);
+    await screen.findByText("No Worker results for this endpoint yet.");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Target API" }), "demo-success");
+    await user.click(screen.getByRole("button", { name: "Run experiment" }));
+    expect(await screen.findByText("Sample limit reached")).toBeTruthy();
+    const panel = screen.getByRole("region", { name: "Reproducible experiments" });
+    expect(await within(panel).findByText(/Stored: 1 samples/)).toBeTruthy();
+    expect(within(panel).getByText(/Worker proxy: p50 Unavailable · p95 Unavailable · n=0/)).toBeTruthy();
+    expect(sampleCount).toBe(1);
+  });
+
+  it.each([[new Error("Create failed"), "Create failed"], ["offline", "Experiment failed."]])
+  ("reports experiment creation failures", async (failure, message) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/probes") return Response.json([]);
+      throw failure;
+    }));
+    const user = userEvent.setup();
+    render(<App initialTheme="light" />);
+    await screen.findByText("No Worker results for this endpoint yet.");
+    await user.click(screen.getByRole("button", { name: "Run experiment" }));
+    expect(await screen.findByText(message)).toBeTruthy();
+  });
+
+  it.each([[new Error("Close failed"), "Close failed"], ["offline", "Could not close experiment window."]])
+  ("reports experiment close failures", async (failure, message) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/probes") return Response.json([]);
+      if (url === "/api/experiments" && init?.method === "POST") return Response.json(experiment([], null), { status: 201 });
+      if (url === "/api/demo/success") return Response.json({ ok: true });
+      if (url.endsWith("/complete")) throw failure;
+      if (url.endsWith("/direct") || url.endsWith("/worker")) return Response.json(experimentSample(0, "browser_direct", 10), { status: 201 });
+      throw new Error(`Unexpected ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<App initialTheme="light" />);
+    await screen.findByText("No Worker results for this endpoint yet.");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Target API" }), "demo-success");
+    await user.click(screen.getByRole("button", { name: "Run experiment" }));
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(screen.getByText(/In progress/)).toBeTruthy();
+  });
+
+  it.each([["load", new Error("List failed"), "List failed"],
+    ["load", "offline", "Could not load experiments."],
+    ["open", new Error("Detail failed"), "Detail failed"],
+    ["open", "offline", "Could not open experiment."]])
+  ("reports saved-experiment lookup failures", async (kind, failure, message) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/probes") return Response.json([]);
+      if (url === "/api/experiments" && kind === "open") return Response.json([experiment()]);
+      throw failure;
+    }));
+    const user = userEvent.setup();
+    render(<App initialTheme="light" />);
+    await screen.findByText("No Worker results for this endpoint yet.");
+    await user.click(screen.getByRole("button", { name: "Load saved experiments" }));
+    if (kind === "open") await user.click(await screen.findByRole("button", { name: /immediate-success · 2026/ }));
+    expect(await screen.findByText(message)).toBeTruthy();
+  });
   it("compares app timings with Cloudflare fetch and D1 spans for one run", async () => {
     let releaseLookup: ((response: Response) => void) | undefined;
     const lookup = new Promise<Response>((resolve) => { releaseLookup = resolve; });

@@ -84,6 +84,32 @@ export interface TraceInvestigation {
   spans: TraceSpan[];
 }
 
+/** An experiment fixes the target, scenario, and Worker deployment before sampling. */
+export interface Experiment {
+  id: string;
+  scenario: string;
+  endpointId: string;
+  deploymentVersion: string;
+  requestedPairs: 3 | 5;
+  windowStartedAt: string;
+  windowEndedAt: string | null;
+  samples: ExperimentSample[];
+}
+
+/** One ordered observation; two consecutive modes form one comparison pair. */
+export interface ExperimentSample {
+  id: string;
+  experimentId: string;
+  ordinal: number;
+  pairIndex: number;
+  requestMode: RequestMode;
+  observedAt: string;
+  durationMs: number | null;
+  status: number | null;
+  errorCategory: ProbeSampleErrorCategory;
+  traceId: string | null;
+}
+
 /** Only these browser measurements may be submitted to the Worker. */
 export interface CreateProbeRequest {
   targetId: string;

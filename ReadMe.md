@@ -67,3 +67,5 @@ wrangler.jsonc       Worker, assets, and D1 binding
 ## Next improvements
 
 Add a controlled test endpoint with configurable delay/error responses, request rate limiting, focused Worker tests, and optional Cloudflare traces. Keep this README in sync as those features are implemented.
+
+See `RELEASE_PLAN.md` for the initial release gates and `RELEASE_LOG.md` for the entry included with each commit and the current release status.

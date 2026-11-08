@@ -6,6 +6,15 @@ Add an entry here **in each commit**. Record user-visible changes, verification,
 
 **v0.1.0:** planned. The local prototype works; production D1, deployment, public verification, and the GitHub release remain open in `RELEASE_PLAN.md`.
 
+### v0.1.0 release description draft
+
+- Synthetic comparison of browser-direct and Cloudflare Worker requests to approved sample APIs.
+- D1-backed history, median durations, status codes, error rate, and a compact latency chart.
+- Bounded request/response bodies, an approximate rate limit, and Worker tests.
+- Measurement note: these paths have different network routes. Their duration difference does not isolate Worker overhead; direct browser access can be unavailable because of CORS.
+
+This is a draft, not a published release. Add the live deployment URL and verification result before publishing.
+
 ## Commits
 
 ### 2026-11-07 — `feat: build Edge API Observatory starter` (`4da05da`)
@@ -27,8 +36,13 @@ Add an entry here **in each commit**. Record user-visible changes, verification,
 - Verified typecheck, tests, build, the local migration state, and a live local probe write.
 - Release impact: the local release candidate now has bounded probe inputs and automated Worker coverage. Production deployment remains open.
 
-### 2026-11-07 — `docs: record local release verification` (this commit)
+### 2026-11-07 — `docs: record local release verification` (`0389b64`)
 
 - Recorded the passing typecheck, five Worker tests, production build, local migration state, and browser comparison that persisted after refresh.
 - Updated the dashboard screenshot to show the verified local release candidate.
 - Release impact: all local v0.1.0 checks are complete; Cloudflare authentication, production D1, remote deployment, and public verification remain open.
+
+### 2026-11-07 — `docs: prepare production release runbook` (this commit)
+
+- Added exact deployment, remote smoke-test, and tag commands plus a v0.1.0 release description draft.
+- Release impact: the production sequence is reviewable while Cloudflare authentication is pending.

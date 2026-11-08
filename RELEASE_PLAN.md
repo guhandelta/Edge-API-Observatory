@@ -17,10 +17,43 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 ## Operational steps for deployment
 
 1. Authenticate Wrangler with the intended Cloudflare account. The current Wrangler login is expired.
-2. Create D1 database `edge-api-observatory`, update `wrangler.jsonc` with its returned ID, and commit that configuration change.
-3. Apply remote migrations and deploy. Confirm the Worker, D1 binding, and static assets are present.
-4. Run one public comparison, refresh the page, and confirm the result persists. Verify a rejected input and a rate-limited request.
+2. Create D1 database `edge-api-observatory`, update `wrangler.jsonc` with its returned ID, run `npm run types`, and commit that configuration change.
+3. Apply remote migrations and deploy. Confirm the Worker, D1 binding, rate-limit binding, and static assets are present.
+4. Run one public comparison, refresh the page, and confirm the result persists. Verify a rejected input. The rate-limit test covers the 429 path; the live limit is approximate, so a fixed number of requests is not a reliable assertion.
 5. Update `ReadMe.md` with the live URL and `RELEASE_LOG.md` with the exact release outcome; commit and push them.
 6. Create and push the `v0.1.0` tag, then publish a GitHub release describing the feature set and measurement limits.
 
 Do not describe v0.1.0 as released until the remote smoke test and tag are complete. The GitHub CLI token is currently invalid; Git push still works through the configured Git credential helper.
+
+### Exact deployment commands
+
+Run these from the repository root after Cloudflare sign-in. Substitute the returned D1 UUID into `wrangler.jsonc` before the migration.
+
+```bash
+npx wrangler whoami
+npx wrangler d1 create edge-api-observatory
+npm run types
+npm run typecheck
+npm run test
+npm run build
+npm run db:migrate:remote
+npm run deploy
+```
+
+Then open the printed `*.workers.dev` URL and run a comparison. Refresh to confirm the history persists. A basic API rejection check is:
+
+```bash
+curl -i -X POST "https://YOUR-WORKER.workers.dev/api/probes" \
+  -H 'Content-Type: application/json' \
+  --data '{"targetId":"unapproved","directDurationMs":null,"directStatus":null,"directError":null}'
+```
+
+Expected result: HTTP 400 with an error message and no upstream probe. After recording the live URL and pushing the final documentation commit, create the tag:
+
+```bash
+git tag -a v0.1.0 -m "Edge API Observatory v0.1.0"
+git push origin main
+git push origin v0.1.0
+```
+
+Publish the release from GitHub's Releases page if the GitHub CLI is still unauthenticated. Use the release draft in `RELEASE_LOG.md` as the description.

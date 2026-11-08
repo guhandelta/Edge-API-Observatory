@@ -128,6 +128,34 @@ describe("Worker API", () => {
     expect(pair.find((sample) => sample.requestMode === "worker_proxy")?.status).toBe(200);
   });
 
+  it("includes the primary D1 write in Worker handler timing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("ok")));
+    const normal = testEnv();
+    const realDb = normal.DB;
+    const delayedDb = {
+      prepare: realDb.prepare.bind(realDb),
+      batch: async (statements: D1PreparedStatement[]) => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 45));
+        return realDb.batch(statements);
+      },
+    } as unknown as D1Database;
+    const created = await worker.fetch(probeRequest(validBody()), { ...normal, DB: delayedDb });
+    expect(created.status).toBe(201);
+    const run = await created.json() as {
+      requestId: string; browserPostRoundTripMs: number | null;
+      workerFetchDurationMs: number; workerHandlerDurationMs: number;
+    };
+    expect(run.browserPostRoundTripMs).toBeNull();
+    expect(run.workerHandlerDurationMs - run.workerFetchDurationMs).toBeGreaterThanOrEqual(40);
+
+    const history = await worker.fetch(new Request(
+      "https://example.test/api/history?endpointId=sample-post&mode=worker_proxy&limit=100",
+    ), testEnv());
+    const samples = await history.json() as Array<{ requestId: string; handlerDurationMs: number | null }>;
+    expect(samples.find((sample) => sample.requestId === run.requestId)?.handlerDurationMs)
+      .toBe(run.workerHandlerDurationMs);
+  });
+
   it("filters individual history and rejects invalid filters", async () => {
     const selected = await worker.fetch(new Request(
       "https://example.test/api/history?endpointId=sample-user&mode=worker_proxy&limit=5",
@@ -283,8 +311,8 @@ describe("Worker API", () => {
         8, null, 200, "none", null),
     ]);
     const withLegacy = await worker.fetch(new Request("https://example.test/api/probes"), testEnv());
-    expect((await withLegacy.json() as Array<{ requestId: string; workerHandlerDurationMs: number }>)
-      .find((row) => row.requestId === "legacy")?.workerHandlerDurationMs).toBe(0);
+    expect((await withLegacy.json() as Array<{ requestId: string; workerHandlerDurationMs: number | null }>)
+      .find((row) => row.requestId === "legacy")?.workerHandlerDurationMs).toBeNull();
     const defaultHistory = await worker.fetch(new Request("https://example.test/api/history"), testEnv());
     expect(defaultHistory.status).toBe(200);
   });

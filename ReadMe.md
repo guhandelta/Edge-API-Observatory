@@ -14,8 +14,8 @@ See [Investigation 001: controlled delay](docs/investigation-001-controlled-dela
 - Controlled `GET /api/demo/success`, `/api/demo/delay`, and `/api/demo/error` routes return HTTP 200 immediately, HTTP 200 after a programmed 750 ms wait, and HTTP 503, respectively. Responses are uncached JSON.
 - Each `POST /api/probes` receives a UUID request ID in the JSON result and `X-Request-ID` response header, including rejected requests. The result carries upstream status, fetch duration, and a stable error category.
 - Run a batch of three or five browser-direct/Worker-proxied pairs against the same selected endpoint. Each pair runs sequentially and is stored in D1.
-- Versioned D1 migrations and a `probe_samples` table with one row per request mode. Each row stores its timestamp, endpoint ID, mode, duration, status, and error category; Worker rows also store handler duration.
-- Dashboard with a latest-batch median comparison, recent runs table, latency chart, Worker status breakdown, and Worker success rate. The latest batch and any history with fewer than ten comparisons are labeled as small samples.
+- Versioned D1 migrations and a `probe_samples` table with one row per request mode. Each row stores its timestamp, endpoint ID, mode, duration, status, and error category; Worker rows also store handler duration through the primary D1 commit.
+- Dashboard with latest-batch medians for browser-direct fetch, Worker upstream fetch, Worker handler, and browser POST round trip; a recent runs table; a latency chart; Worker status breakdown; and Worker success rate. The latest batch and any history with fewer than ten comparisons are labeled as small samples.
 - A sun/light and crescent-moon/dark toggle with a muted light palette and a blue-violet-brown dark palette. The app uses the operating system preference until you choose a theme, then remembers that choice in local browser storage.
 - Probe requests accept only JSON and at most 2 KiB of input. Upstream bodies are read up to 64 KiB.
 - A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
@@ -27,11 +27,11 @@ The hardened local release candidate was verified in a browser: both paths retur
 
 `npm run test:coverage` runs separate Cloudflare Worker and React DOM suites. Each suite enforces **100% statements, branches, functions, and lines per production TypeScript file**. The covered runtime files are `worker/index.ts`, `shared/contracts.ts`, `src/metrics.ts`, `src/App.tsx`, `src/theme.ts`, and `src/main.tsx`. Configuration, generated declarations, CSS, SQL migrations, and test code are outside that metric. This coverage gate checks executed paths; it does not prove correctness on Cloudflare's production network. The CI workflow runs the same gate on pushes to `main` and pull requests. HTML and JSON reports are written to the ignored `coverage/worker` and `coverage/ui` folders.
 
-This is **synthetic testing**, not passive monitoring of an existing API's real traffic. Browser timings are client-reported. Direct browser tests can fail because of CORS, and a difference between browser-direct and Worker-proxied durations does not isolate Worker overhead. The Worker fetch timing includes reading the response body. Worker handler timing is measured internally but is not shown as a precise CPU measurement. For demo fixtures, the browser directly requests the app's Worker-hosted fixture, while the probe Worker fetches that same public URL. This is a controlled same-origin comparison, not an external upstream benchmark. The programmed delay and HTTP statuses are repeatable; measured latency can still vary.
+This is **synthetic testing**, not passive monitoring of an existing API's real traffic. Browser timings are client-reported. Direct browser tests can fail because of CORS, and a difference between browser-direct and Worker-proxied durations does not isolate Worker overhead. The Worker fetch timing includes reading the response body. Worker handler time is wall time, not CPU time. It starts at Worker request entry and includes rate limiting, validation, upstream fetch, and the primary D1 batch commit. The Worker then writes that measured value to its D1 row, so the timing-metadata update and response delivery fall outside the recorded interval. Browser POST round trip starts immediately before `fetch("/api/probes")` and stops after its JSON response is read. It includes browser-to-Worker network time, Worker processing, and response transfer. These durations overlap and cannot be added or subtracted as independent stages. For demo fixtures, the browser directly requests the app's Worker-hosted fixture, while the probe Worker fetches that same public URL. This is a controlled same-origin comparison, not an external upstream benchmark. The programmed delay and HTTP statuses are repeatable; measured latency can still vary.
 
 Cloudflare's `global_fetch_strictly_public` compatibility flag allows the probe Worker to fetch its own public fixture URL. The fixture route handles requests directly and never starts another probe. Local self-fetch has been verified; public deployment must still be checked after Cloudflare authentication.
 
-The latest-batch panel compares medians only from the pairs just run in this browser session; it clears on refresh. The persistent summary uses the selected endpoint's records within the 30 most recent comparisons returned by D1. Each median shows its own count of measured durations. Worker success rate is the percentage of those comparisons with an HTTP 2xx upstream response and no fetch error. The status breakdown groups Worker outcomes into 2xx, 3xx, 4xx, 5xx, and fetch errors. These rates and medians are directional when the sample size is small.
+The latest-batch panel compares medians only from the pairs just run in this browser session; it clears on refresh. The browser POST timing is known only after the POST completes, so it is attached to the current page's result and recent-runs table, not sent in that POST or stored in D1. Historical results show it as unavailable after refresh. The persistent summary uses the selected endpoint's records within the 30 most recent comparisons returned by D1. Each median shows its own count of measured durations. Worker success rate is the percentage of those comparisons with an HTTP 2xx upstream response and no fetch error. The status breakdown groups Worker outcomes into 2xx, 3xx, 4xx, 5xx, and fetch errors. These rates and medians are directional when the sample size is small.
 
 ### Probe API result
 
@@ -43,11 +43,13 @@ Send JSON such as `{"targetId":"sample-post","directDurationMs":null,"directStat
   "targetId": "sample-post",
   "workerStatus": 200,
   "workerFetchDurationMs": 148,
+  "workerHandlerDurationMs": 156,
+  "browserPostRoundTripMs": null,
   "workerErrorCategory": "none"
 }
 ```
 
-The complete response also contains the persisted run `id`, timestamp, browser-reported measurements, and Worker error detail. `requestId` equals `id` for a stored run. Error categories are `none`, `http_error`, `timeout`, `network_error`, and `response_too_large`. A timeout is set to eight seconds; upstream response bodies are capped at 64 KiB. Rejected probe requests and internal failures also include a request ID for correlation.
+The complete response also contains the persisted run `id`, timestamp, browser-reported direct measurements, and Worker error detail. `browserPostRoundTripMs` is `null` in the API response because only the browser can measure the completed POST. `requestId` equals `id` for a stored run. Error categories are `none`, `http_error`, `timeout`, `network_error`, and `response_too_large`. A timeout is set to eight seconds; upstream response bodies are capped at 64 KiB. Rejected probe requests and internal failures also include a request ID for correlation.
 
 ### Individual result history
 

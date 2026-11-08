@@ -12,6 +12,7 @@ function run(id: string, overrides: Partial<ProbeRun> = {}): ProbeRun {
     targetId: "sample-post",
     createdAt: "2026-11-08T12:00:00.000Z",
     directDurationMs: 10,
+    browserPostRoundTripMs: null,
     directStatus: 200,
     directError: null,
     workerFetchDurationMs: 8,
@@ -38,6 +39,7 @@ describe("dashboard integration", () => {
       if (url === "/api/demo/success") return Response.json({ ok: true });
       if (url === "/api/probes" && init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as { targetId: string; directStatus: number };
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
         nextId += 1;
         return Response.json(run(String(nextId), {
           targetId: body.targetId, directStatus: body.directStatus,
@@ -63,7 +65,14 @@ describe("dashboard integration", () => {
     expect(await screen.findByRole("heading", { name: /Demo · success · 3\/3 pairs/ })).toBeTruthy();
     expect(within(screen.getByRole("region", { name: "Last batch median comparison" }))
       .getByText(/Small sample/)).toBeTruthy();
+    const batch = screen.getByRole("region", { name: "Last batch median comparison" });
+    expect(within(batch).getByText("Worker handler median").parentElement?.querySelector("strong")?.textContent)
+      .toBe("9 ms");
+    expect(within(batch).getByText("Browser POST round trip median").parentElement?.querySelector("strong")?.textContent)
+      .toMatch(/^[1-9]\d* ms$/);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(3);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")
+      .every(([, init]) => !Object.hasOwn(JSON.parse(String(init?.body)) as object, "browserPostRoundTripMs"))).toBe(true);
 
     await user.selectOptions(screen.getByRole("combobox", { name: "Pairs to run" }), "5");
     await user.click(screen.getByRole("button", { name: "Run 5 pairs →" }));
@@ -125,7 +134,8 @@ describe("dashboard integration", () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json([
       run("unknown", {
         directDurationMs: null, directStatus: null, directError: null,
-        workerFetchDurationMs: null, workerStatus: null, workerError: null,
+        workerFetchDurationMs: null, workerHandlerDurationMs: null,
+        workerStatus: null, workerError: null,
         workerErrorCategory: "network_error",
       }),
     ])));
@@ -134,7 +144,7 @@ describe("dashboard integration", () => {
     const rows = await screen.findAllByRole("row");
     expect(rows).toHaveLength(2);
     expect(within(rows[1]).getAllByText("—")).toHaveLength(2);
-    expect(within(rows[1]).getAllByText("Unavailable")).toHaveLength(2);
+    expect(within(rows[1]).getAllByText("Unavailable")).toHaveLength(4);
   });
 
   it("keeps completed pairs when a later API request fails", async () => {

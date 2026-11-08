@@ -37,6 +37,7 @@ export interface ProbeSample {
   endpointId: string;
   requestMode: RequestMode;
   fetchDurationMs: number | null;
+  /** Worker rows include the probe path through its primary D1 commit. */
   handlerDurationMs: number | null;
   status: number | null;
   errorCategory: ProbeSampleErrorCategory;
@@ -51,10 +52,13 @@ export interface ProbeRun {
   targetId: string;
   createdAt: string;
   directDurationMs: number | null;
+  /** Browser-measured POST response time; available only for the current session. */
+  browserPostRoundTripMs: number | null;
   directStatus: number | null;
   directError: string | null;
   workerFetchDurationMs: number | null;
-  workerHandlerDurationMs: number;
+  /** Worker entry through the primary D1 commit; excludes timing metadata update. */
+  workerHandlerDurationMs: number | null;
   workerStatus: number | null;
   workerError: string | null;
   workerErrorCategory: ProbeErrorCategory;

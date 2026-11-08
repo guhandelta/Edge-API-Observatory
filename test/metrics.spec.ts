@@ -11,6 +11,7 @@ function run(id: string, direct: number | null, worker: number, status: number |
     targetId: "sample-post",
     createdAt: "2026-11-07T12:00:00.000Z",
     directDurationMs: direct,
+    browserPostRoundTripMs: null,
     directStatus: direct === null ? null : 200,
     directError: direct === null ? "cors_or_network_error" : null,
     workerFetchDurationMs: worker,
@@ -33,6 +34,8 @@ describe("dashboard metrics", () => {
     expect(summary.workerMedian).toBe(250);
     expect(summary.directMeasured).toBe(3);
     expect(summary.workerMeasured).toBe(4);
+    expect(summary.postMeasured).toBe(0);
+    expect(summary.handlerMeasured).toBe(4);
     expect(summary.workerSuccessRate).toBe(25);
     expect(summary.statusCounts).toEqual({
       "2xx": 1, "3xx": 0, "4xx": 0, "5xx": 1, "Fetch error": 2,
@@ -44,6 +47,8 @@ describe("dashboard metrics", () => {
     expect(summary.workerSuccessRate).toBeNull();
     expect(summary.directMedian).toBeNull();
     expect(summary.workerMedian).toBeNull();
+    expect(summary.postMedian).toBeNull();
+    expect(summary.handlerMedian).toBeNull();
   });
 
   it("uses the middle value for odd samples and the midpoint for even samples", () => {
@@ -70,10 +75,29 @@ describe("dashboard metrics", () => {
   it("counts only available durations when one request path has no measurement", () => {
     const sample = run("missing-measurements", null, 0, null, "network_error");
     sample.workerFetchDurationMs = null;
+    sample.workerHandlerDurationMs = null;
     const summary = summarizeRuns([sample]);
     expect(summary.directMeasured).toBe(0);
     expect(summary.workerMeasured).toBe(0);
     expect(summary.directMedian).toBeNull();
     expect(summary.workerMedian).toBeNull();
+    expect(summary.handlerMedian).toBeNull();
+  });
+
+  it("summarizes browser POST and Worker handler timing only when available", () => {
+    const first = run("first", 15, 10, 200, "none");
+    first.browserPostRoundTripMs = 35;
+    first.workerHandlerDurationMs = 22;
+    const second = run("second", 20, 15, 200, "none");
+    second.browserPostRoundTripMs = 45;
+    second.workerHandlerDurationMs = 30;
+    const third = run("history", 25, 20, 200, "none");
+    third.browserPostRoundTripMs = null;
+    third.workerHandlerDurationMs = null;
+    const summary = summarizeRuns([first, second, third]);
+    expect(summary.postMeasured).toBe(2);
+    expect(summary.handlerMeasured).toBe(2);
+    expect(summary.postMedian).toBe(40);
+    expect(summary.handlerMedian).toBe(26);
   });
 });

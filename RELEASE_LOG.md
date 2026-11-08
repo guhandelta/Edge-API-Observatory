@@ -105,3 +105,10 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Added Istanbul coverage gates for all six production TypeScript runtime files and a GitHub Actions workflow that runs typecheck, coverage, and build.
 - Verified 22 Worker tests and 14 UI tests with 100% statements, branches, functions, and lines per included file; typecheck and production build pass.
 - Release impact: adds a repeatable local and CI quality gate. Production deployment and public verification remain pending.
+
+### 2026-11-08 — `feat: complete probe timing model` (this commit)
+
+- Measured the browser's `POST /api/probes` round trip through response parsing and displayed its current-session value and median alongside the browser-direct, Worker-upstream, and Worker-handler timings.
+- Extended Worker handler wall time from request entry through rate limiting, validation, upstream fetch, and the primary D1 batch commit. Persisted that measurement in the Worker sample; the timing-metadata update itself is outside the recorded interval.
+- Added a delayed-D1 integration assertion and UI/metric tests. Verified 24 Worker tests and 14 UI tests with 100% per-file statements, branches, functions, and lines; typecheck and production build pass. A local demo-success probe returned 42 ms upstream fetch and 108 ms handler time, with 108 ms confirmed in D1 history. A three-pair browser run displayed all four medians, including 38 ms Worker handler and 88 ms browser POST round trip.
+- Release impact: the timing model is complete for the local release candidate. Browser POST timing remains session-only; production deployment and public verification remain pending.

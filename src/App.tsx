@@ -138,15 +138,22 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
     try {
       for (let index = 0; index < batchSize; index += 1) {
         const direct = await measureDirect(target.url);
+        const postStarted = performance.now();
         const response = await fetch("/api/probes", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ targetId, ...direct } satisfies CreateProbeRequest),
         });
         const run = await readApi<ProbeRun>(response);
-        completed.push(run);
+        // This includes POST network time and response-body parsing, and is
+        // known only after the Worker has already persisted its probe rows.
+        const measuredRun: ProbeRun = {
+          ...run,
+          browserPostRoundTripMs: performance.now() - postStarted,
+        };
+        completed.push(measuredRun);
         setProgress(index + 1);
-        setRuns((current) => [run, ...current].slice(0, 30));
+        setRuns((current) => [measuredRun, ...current].slice(0, 30));
       }
     } catch (cause) {
       setError(`${cause instanceof Error ? cause.message : "Comparison failed."} ${completed.length} of ${batchSize} comparisons completed.`);
@@ -205,8 +212,10 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
         <div className="batch-medians">
           <div><span>Browser direct median</span><strong>{formatMs(batchSummary.directMedian)}</strong><small>n={batchSummary.directMeasured} measured</small></div>
           <div><span>Worker upstream median</span><strong>{formatMs(batchSummary.workerMedian)}</strong><small>n={batchSummary.workerMeasured} measured</small></div>
+          <div><span>Worker handler median</span><strong>{formatMs(batchSummary.handlerMedian)}</strong><small>n={batchSummary.handlerMeasured} measured</small></div>
+          <div><span>Browser POST round trip median</span><strong>{formatMs(batchSummary.postMedian)}</strong><small>n={batchSummary.postMeasured} measured · this session</small></div>
         </div>
-        <p className="muted">These medians compare two network paths. Their difference does not measure Worker overhead.</p>
+        <p className="muted">The POST round trip includes the Worker probe and browser network time. These durations overlap and should not be added or subtracted as separate stages.</p>
       </section>}
 
       <section className="metrics" aria-label="Selected target summary">
@@ -235,7 +244,7 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
         {loading ? <p className="empty">Loading history…</p> : <HistoryChart runs={selectedRuns} />}
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Time</th><th>Target</th><th>Browser</th><th>Browser status</th><th>Worker fetch</th><th>Worker status</th></tr></thead>
+            <thead><tr><th>Time</th><th>Target</th><th>Browser direct</th><th>Browser status</th><th>Worker fetch</th><th>Worker handler</th><th>Browser POST (session)</th><th>Worker status</th></tr></thead>
             <tbody>
               {selectedRuns.slice(0, 8).map((run) => (
                 <tr key={run.id}>
@@ -244,16 +253,18 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
                   <td>{formatMs(run.directDurationMs)}</td>
                   <td>{run.directError ?? run.directStatus ?? "—"}</td>
                   <td>{formatMs(run.workerFetchDurationMs)}</td>
+                  <td>{formatMs(run.workerHandlerDurationMs)}</td>
+                  <td>{formatMs(run.browserPostRoundTripMs)}</td>
                   <td>{run.workerError ?? run.workerStatus ?? "—"}</td>
                 </tr>
               ))}
-              {selectedRuns.length === 0 && <tr><td colSpan={6} className="empty">No measurements yet.</td></tr>}
+              {selectedRuns.length === 0 && <tr><td colSpan={8} className="empty">No measurements yet.</td></tr>}
             </tbody>
           </table>
         </div>
       </section>
 
-      <p className="footnote">These paths have different network routes. Their difference does not isolate Worker overhead. Browser failures may reflect CORS restrictions.</p>
+      <p className="footnote">These paths have different network routes. Their difference does not isolate Worker overhead. Browser POST timing is available only in this session; browser failures may reflect CORS restrictions.</p>
     </main>
   );
 }

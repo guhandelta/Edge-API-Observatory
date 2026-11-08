@@ -210,10 +210,11 @@ function pairSamples(samples: ProbeSample[]): ProbeRun[] {
       targetId: worker.endpointId,
       createdAt: worker.observedAt,
       directDurationMs: direct.fetchDurationMs,
+      browserPostRoundTripMs: null,
       directStatus: direct.status,
       directError: direct.errorDetail,
       workerFetchDurationMs: worker.fetchDurationMs,
-      workerHandlerDurationMs: worker.handlerDurationMs ?? 0,
+      workerHandlerDurationMs: worker.handlerDurationMs,
       workerStatus: worker.status,
       workerError: worker.errorDetail,
       workerErrorCategory: worker.errorCategory as ProbeErrorCategory,
@@ -222,7 +223,7 @@ function pairSamples(samples: ProbeSample[]): ProbeRun[] {
 }
 
 /** Run one approved probe and persist both perspectives as one comparison. */
-async function createProbe(request: Request, env: Env, requestId: string): Promise<Response> {
+async function createProbe(request: Request, env: Env, requestId: string, handlerStarted: number): Promise<Response> {
   // This anonymous demo uses a shared per-location budget to bound total traffic.
   const allowance = await env.PROBE_RATE_LIMITER.limit({ key: "public-probes" });
   if (!allowance.success) {
@@ -233,21 +234,19 @@ async function createProbe(request: Request, env: Env, requestId: string): Promi
   const { input } = parsed;
 
   const target = TARGETS.find((item) => item.id === input.targetId)!;
-  const handlerStarted = performance.now();
   // Relative fixture URLs resolve to this public Worker origin for both request modes.
   const upstream = await probeUpstream(new URL(target.url, request.url).href);
-  // Worker clocks advance on I/O, so this is handler wall time, not CPU time.
-  const handlerDurationMs = performance.now() - handlerStarted;
   const run: ProbeRun = {
     id: requestId,
     requestId,
     targetId: target.id,
     createdAt: new Date().toISOString(),
     directDurationMs: input.directDurationMs,
+    browserPostRoundTripMs: null,
     directStatus: input.directStatus,
     directError: input.directError,
     workerFetchDurationMs: upstream.durationMs,
-    workerHandlerDurationMs: handlerDurationMs,
+    workerHandlerDurationMs: null,
     workerStatus: upstream.status,
     workerError: upstream.error,
     workerErrorCategory: errorCategory(upstream.status, upstream.error),
@@ -274,6 +273,13 @@ async function createProbe(request: Request, env: Env, requestId: string): Promi
       run.workerErrorCategory, run.workerError,
     ),
   ]);
+
+  // Capture the full probe path through its primary D1 commit. The subsequent
+  // timing-metadata update cannot include itself in the value it writes.
+  run.workerHandlerDurationMs = performance.now() - handlerStarted;
+  await env.DB.prepare(
+    "UPDATE probe_samples SET handler_duration_ms = ? WHERE request_id = ? AND request_mode = 'worker_proxy'",
+  ).bind(run.workerHandlerDurationMs, requestId).run();
 
   return json(run, 201, requestId);
 }
@@ -312,6 +318,7 @@ async function listHistory(url: URL, env: Env): Promise<Response> {
 /** The Worker owns only API routes; Vite/Workers Assets serve the React app. */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const handlerStarted = performance.now();
     const url = new URL(request.url);
     const requestId = url.pathname === "/api/probes" && request.method === "POST"
       ? crypto.randomUUID()
@@ -331,7 +338,7 @@ export default {
         return await listHistory(url, env);
       }
       if (url.pathname === "/api/probes" && request.method === "POST") {
-        return await createProbe(request, env, requestId!);
+        return await createProbe(request, env, requestId!, handlerStarted);
       }
       return json({ error: "Route not found." }, 404);
     } catch (error) {

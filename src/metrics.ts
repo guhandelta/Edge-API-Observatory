@@ -9,8 +9,12 @@ export interface RunSummary {
   comparisons: number;
   directMeasured: number;
   workerMeasured: number;
+  postMeasured: number;
+  handlerMeasured: number;
   directMedian: number | null;
   workerMedian: number | null;
+  postMedian: number | null;
+  handlerMedian: number | null;
   workerSuccessRate: number | null;
   statusCounts: Record<StatusBucket, number>;
 }
@@ -42,6 +46,8 @@ export function statusBucket(run: ProbeRun): StatusBucket {
 export function summarizeRuns(runs: ProbeRun[]): RunSummary {
   const direct = runs.flatMap((run) => run.directDurationMs === null ? [] : [run.directDurationMs]);
   const worker = runs.flatMap((run) => run.workerFetchDurationMs === null ? [] : [run.workerFetchDurationMs]);
+  const post = runs.flatMap((run) => run.browserPostRoundTripMs === null ? [] : [run.browserPostRoundTripMs]);
+  const handler = runs.flatMap((run) => run.workerHandlerDurationMs === null ? [] : [run.workerHandlerDurationMs]);
   const statusCounts: Record<StatusBucket, number> = {
     "2xx": 0,
     "3xx": 0,
@@ -55,8 +61,12 @@ export function summarizeRuns(runs: ProbeRun[]): RunSummary {
     comparisons: runs.length,
     directMeasured: direct.length,
     workerMeasured: worker.length,
+    postMeasured: post.length,
+    handlerMeasured: handler.length,
     directMedian: median(direct),
     workerMedian: median(worker),
+    postMedian: median(post),
+    handlerMedian: median(handler),
     workerSuccessRate: runs.length === 0 ? null : Math.round((successful / runs.length) * 100),
     statusCounts,
   };

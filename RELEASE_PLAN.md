@@ -10,6 +10,7 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 - [x] Add Cloudflare rate limiting to the probe route and verify its 429 response in a Worker test.
 - [x] Add automated Worker tests covering validation, storage, and error paths.
 - [x] Enforce 100% per-file statements, branches, functions, and lines for production TypeScript in Worker and UI suites; run the gate in CI.
+- [x] Measure browser `POST /api/probes` round trip in the current session and Worker handler time through the primary D1 commit; verify the D1-inclusive interval and maintain 100% coverage.
 - [x] Add controlled success, delay, and error fixtures; verify all three Worker probe paths and a browser comparison against the error fixture locally.
 - [x] Document a controlled-delay investigation with measured batches, an architecture diagram, and screenshots.
 - [x] Run typecheck, tests, build, local migration verification, and browser smoke test with persistence after refresh.

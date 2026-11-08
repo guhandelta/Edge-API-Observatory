@@ -20,9 +20,15 @@ Add an entry here **in each commit**. Record user-visible changes, verification,
 - Verified the existing repo state and Cloudflare/GitHub authentication status.
 - Release impact: records the remaining work and external account gates without claiming a release.
 
-### 2026-11-07 — `feat: harden probes and add Worker tests` (this commit)
+### 2026-11-07 — `feat: harden probes and add Worker tests` (`a801536`)
 
 - Limited JSON request bodies to 2 KiB and upstream response reads to 64 KiB. Added the Cloudflare rate-limit binding for a shared anonymous budget.
 - Added Wrangler-generated binding types and five tests for the allowlist, validation, rate-limit response, D1 persistence, and oversized responses.
 - Verified typecheck, tests, build, the local migration state, and a live local probe write.
 - Release impact: the local release candidate now has bounded probe inputs and automated Worker coverage. Production deployment remains open.
+
+### 2026-11-07 — `docs: record local release verification` (this commit)
+
+- Recorded the passing typecheck, five Worker tests, production build, local migration state, and browser comparison that persisted after refresh.
+- Updated the dashboard screenshot to show the verified local release candidate.
+- Release impact: all local v0.1.0 checks are complete; Cloudflare authentication, production D1, remote deployment, and public verification remain open.

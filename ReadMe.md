@@ -16,7 +16,7 @@ A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. 
 - A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
 - Five Worker tests cover the allowlist, invalid input, rate-limit response, D1 persistence, and an oversized upstream response.
 
-The initial local comparison was verified in a browser: both paths returned HTTP 200 and the result appeared in the D1-backed history.
+The hardened local release candidate was verified in a browser: both paths returned HTTP 200, and the result remained in D1-backed history after a page refresh. `npm run typecheck`, `npm run test`, and `npm run build` pass.
 
 This is **synthetic testing**, not passive monitoring of an existing API's real traffic. Browser timings are client-reported. Direct browser tests can fail because of CORS, and a difference between browser-direct and Worker-proxied durations does not isolate Worker overhead. The Worker fetch timing includes reading the response body. Worker handler timing is measured internally but is not shown as a precise CPU measurement.
 

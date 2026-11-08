@@ -2,7 +2,9 @@
 
 A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. It measures the same approved endpoint from two places: directly in the visitor's browser and through a Cloudflare Worker. The Worker records comparisons in D1, and the React dashboard shows recent latency, status, and error results.
 
-![Dashboard preview](docs/dashboard-preview.png)
+![Dashboard preview showing the controlled delay](docs/investigation-delay.jpg)
+
+See [Investigation 001: controlled delay](docs/investigation-001-controlled-delay.md) for a reproducible local case study, architecture diagram, measured medians, and screenshots.
 
 ## What works now
 

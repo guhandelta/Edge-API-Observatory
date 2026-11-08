@@ -10,6 +10,7 @@ Add an entry here **in each commit**. Record user-visible changes, verification,
 
 - Synthetic comparison of browser-direct and Cloudflare Worker requests to approved sample APIs.
 - Controlled same-origin success, 750 ms delay, and HTTP 503 fixtures for repeatable demonstrations.
+- A documented local delay investigation with architecture and screenshots.
 - D1-backed history, median durations, status codes, error rate, and a compact latency chart.
 - Bounded request/response bodies, an approximate rate limit, and Worker tests.
 - Measurement note: these paths have different network routes. Their duration difference does not isolate Worker overhead; direct browser access can be unavailable because of CORS.
@@ -89,3 +90,11 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Made chart bars scale to their container so the dashboard does not overflow a narrow viewport.
 - Verified typecheck, production build, both palettes in the browser, persistence after reload, and a 375 px viewport without horizontal page overflow.
 - Release impact: improves the local portfolio dashboard; production deployment remains pending.
+
+### 2026-11-07 — `docs: record controlled delay investigation` (this commit)
+
+- Added a three-batch local investigation showing immediate success, programmed 750 ms delay, and return to immediate success.
+- Recorded latest-batch browser-direct and Worker fetch medians, HTTP statuses, a Mermaid architecture diagram, and full-page screenshots of the delayed and recovery batches.
+- Explained the small sample and that browser-to-Worker round-trip time is not measured, so it cannot be claimed stable.
+- Verified the browser results, screenshot contents and links, typecheck, production build, and the local D1 history route returning both request modes.
+- Release impact: Step 5 portfolio evidence is complete locally; public deployment and verification remain pending.

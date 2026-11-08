@@ -10,6 +10,7 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 - [x] Add Cloudflare rate limiting to the probe route and verify its 429 response in a Worker test.
 - [x] Add automated Worker tests covering validation, storage, and error paths.
 - [x] Add controlled success, delay, and error fixtures; verify all three Worker probe paths and a browser comparison against the error fixture locally.
+- [x] Document a controlled-delay investigation with measured batches, an architecture diagram, and screenshots.
 - [x] Run typecheck, tests, build, local migration verification, and browser smoke test with persistence after refresh.
 - [ ] Create the production D1 database and replace the placeholder database ID.
 - [ ] Apply the remote migration, deploy the Worker, and verify the public URL from a browser.

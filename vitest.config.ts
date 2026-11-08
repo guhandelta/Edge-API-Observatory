@@ -14,5 +14,15 @@ export default defineConfig({
       },
     })),
   ],
-  test: { setupFiles: ["./test/setup.ts"] },
+  test: {
+    include: ["test/worker.spec.ts", "test/metrics.spec.ts"],
+    setupFiles: ["./test/setup.ts"],
+    coverage: {
+      provider: "istanbul",
+      include: ["worker/index.ts", "shared/contracts.ts", "src/metrics.ts"],
+      reportsDirectory: "./coverage/worker",
+      reporter: ["text", "json", "json-summary", "html"],
+      thresholds: { 100: true, perFile: true },
+    },
+  },
 });

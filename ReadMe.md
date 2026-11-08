@@ -19,9 +19,13 @@ See [Investigation 001: controlled delay](docs/investigation-001-controlled-dela
 - A sun/light and crescent-moon/dark toggle with a muted light palette and a blue-violet-brown dark palette. The app uses the operating system preference until you choose a theme, then remembers that choice in local browser storage.
 - Probe requests accept only JSON and at most 2 KiB of input. Upstream bodies are read up to 64 KiB.
 - A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
-- Worker tests cover the allowlist, invalid input, rate-limit response, D1 persistence, oversized responses, and success, HTTP-error, timeout, and network-error categories.
+- Worker unit and D1 integration tests cover the allowlist, invalid input, rate-limit response, persistence, oversized responses, and success, HTTP-error, timeout, and network-error categories. React DOM tests cover batch interactions, history and error states, theme preference, and bootstrap.
 
-The hardened local release candidate was verified in a browser: both paths returned HTTP 200, and the result remained in D1-backed history after a page refresh. `npm run typecheck`, `npm run test`, and `npm run build` pass.
+The hardened local release candidate was verified in a browser: both paths returned HTTP 200, and the result remained in D1-backed history after a page refresh. `npm run typecheck`, `npm run test:coverage`, and `npm run build` pass.
+
+### Test coverage
+
+`npm run test:coverage` runs separate Cloudflare Worker and React DOM suites. Each suite enforces **100% statements, branches, functions, and lines per production TypeScript file**. The covered runtime files are `worker/index.ts`, `shared/contracts.ts`, `src/metrics.ts`, `src/App.tsx`, `src/theme.ts`, and `src/main.tsx`. Configuration, generated declarations, CSS, SQL migrations, and test code are outside that metric. This coverage gate checks executed paths; it does not prove correctness on Cloudflare's production network. The CI workflow runs the same gate on pushes to `main` and pull requests. HTML and JSON reports are written to the ignored `coverage/worker` and `coverage/ui` folders.
 
 This is **synthetic testing**, not passive monitoring of an existing API's real traffic. Browser timings are client-reported. Direct browser tests can fail because of CORS, and a difference between browser-direct and Worker-proxied durations does not isolate Worker overhead. The Worker fetch timing includes reading the response body. Worker handler timing is measured internally but is not shown as a precise CPU measurement. For demo fixtures, the browser directly requests the app's Worker-hosted fixture, while the probe Worker fetches that same public URL. This is a controlled same-origin comparison, not an external upstream benchmark. The programmed delay and HTTP statuses are repeatable; measured latency can still vary.
 
@@ -91,7 +95,10 @@ The rate limit is now present; it is approximate and local to each Cloudflare lo
 | `npm run dev` | Start the local Vite and Worker runtime |
 | `npm run typecheck` | Check the React, Worker, and config TypeScript |
 | `npm run types` | Regenerate binding/runtime types after changing `wrangler.jsonc` |
-| `npm run test` | Run Worker tests in the Cloudflare runtime |
+| `npm run test` | Run Worker and React DOM test suites |
+| `npm run test:worker` | Run Worker unit and D1 integration tests in the Cloudflare runtime |
+| `npm run test:ui` | Run React DOM and theme tests in jsdom |
+| `npm run test:coverage` | Run both suites with per-file 100% coverage gates |
 | `npm run build` | Typecheck and build the frontend/Worker |
 | `npm run db:migrate:local` | Apply the D1 schema locally |
 | `npm run db:migrate:remote` | Apply the D1 schema remotely |
@@ -109,6 +116,8 @@ wrangler.jsonc       Worker, assets, and D1 binding
 worker-configuration.d.ts  Generated binding/runtime types
 test/                Worker tests and migration setup
 vitest.config.ts     Cloudflare Vitest runtime configuration
+vitest.ui.config.ts  React DOM Vitest configuration
+.github/workflows/ci.yml  Typecheck, coverage, and build gate
 ```
 
 ## Next improvements

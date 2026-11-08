@@ -10,5 +10,5 @@
     "strict": true,
     "types": ["@cloudflare/vitest-plugin/types", "vitest/globals"]
   },
-  "include": ["test", "shared", "worker", "worker-configuration.d.ts"]
+  "include": ["test/setup.ts", "test/worker.spec.ts", "test/metrics.spec.ts", "shared", "worker", "worker-configuration.d.ts"]
 }

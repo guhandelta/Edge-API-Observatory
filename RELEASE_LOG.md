@@ -98,3 +98,10 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Explained the small sample and that browser-to-Worker round-trip time is not measured, so it cannot be claimed stable.
 - Verified the browser results, screenshot contents and links, typecheck, production build, and the local D1 history route returning both request modes.
 - Release impact: Step 5 portfolio evidence is complete locally; public deployment and verification remain pending.
+
+### 2026-11-08 — `test: enforce full Worker and dashboard coverage` (this commit)
+
+- Added Worker validation, error, history, and D1 integration cases plus React DOM tests for batches, status display, failures, theme preference, and bootstrap.
+- Added Istanbul coverage gates for all six production TypeScript runtime files and a GitHub Actions workflow that runs typecheck, coverage, and build.
+- Verified 22 Worker tests and 14 UI tests with 100% statements, branches, functions, and lines per included file; typecheck and production build pass.
+- Release impact: adds a repeatable local and CI quality gate. Production deployment and public verification remain pending.

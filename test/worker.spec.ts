@@ -22,6 +22,11 @@ function probeRequest(body: unknown, contentType = "application/json"): Request 
   });
 }
 
+/** Keep validation cases focused on one invalid field at a time. */
+function validBody() {
+  return { targetId: "sample-post", directDurationMs: 12, directStatus: 200, directError: null };
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Worker API", () => {
@@ -183,5 +188,130 @@ describe("Worker API", () => {
     const run = await created.json() as { workerError: string; workerErrorCategory: string };
     expect(run.workerError).toBe("response_too_large");
     expect(run.workerErrorCategory).toBe("response_too_large");
+  });
+
+  it("rejects empty, malformed, undecodable, and overdeclared request bodies", async () => {
+    const empty = new Request("https://example.test/api/probes", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+    });
+    const undecodable = new Request("https://example.test/api/probes", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: new Uint8Array([0xff]),
+    });
+    const overdeclared = new Request("https://example.test/api/probes", {
+      method: "POST", headers: { "Content-Type": "application/json", "Content-Length": "2049" },
+      body: "{}",
+    });
+    const responses = await Promise.all([
+      worker.fetch(empty, testEnv()),
+      worker.fetch(probeRequest("{"), testEnv()),
+      worker.fetch(undecodable, testEnv()),
+      worker.fetch(overdeclared, testEnv()),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 413]);
+    expect((await responses[0].json() as { error: string }).error).toMatch(/request body/i);
+  });
+
+  it("rejects invalid browser measurements and accepts JSON with a charset", async () => {
+    const invalid = [
+      null,
+      [],
+      { ...validBody(), directDurationMs: -1 },
+      { ...validBody(), directDurationMs: 60001 },
+      { ...validBody(), directDurationMs: "12" },
+      { ...validBody(), directStatus: 99 },
+      { ...validBody(), directStatus: 600 },
+      { ...validBody(), directStatus: 200.5 },
+      { ...validBody(), directStatus: "200" },
+      { ...validBody(), directError: "internal_error" },
+      { ...validBody(), directError: 0 },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+    for (const input of invalid) {
+      expect((await worker.fetch(probeRequest(input), testEnv())).status).toBe(400);
+    }
+    const nonfinite = '{"targetId":"sample-post","directDurationMs":1e400,"directStatus":200,"directError":null}';
+    expect((await worker.fetch(probeRequest(nonfinite), testEnv())).status).toBe(400);
+    const accepted = await worker.fetch(probeRequest(validBody(), "application/json; charset=utf-8"), testEnv());
+    expect(accepted.status).toBe(201);
+    expect((await accepted.json() as { workerStatus: number }).workerStatus).toBe(204);
+  });
+
+  it("stores browser timeout and CORS/network categories independently of the Worker outcome", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("ok")));
+    for (const [directError, expected] of [
+      ["timeout", "timeout"],
+      ["cors_or_network_error", "cors_or_network_error"],
+    ] as const) {
+      const created = await worker.fetch(probeRequest({
+        ...validBody(), directDurationMs: null, directStatus: null, directError,
+      }), testEnv());
+      const run = await created.json() as { requestId: string };
+      const history = await worker.fetch(new Request(
+        `https://example.test/api/history?endpointId=sample-post&mode=browser_direct&limit=100`,
+      ), testEnv());
+      const rows = await history.json() as Array<{ requestId: string; errorCategory: string }>;
+      expect(rows.find((row) => row.requestId === run.requestId)?.errorCategory).toBe(expected);
+    }
+  });
+
+  it("validates endpoint and numeric history filters and omits incomplete pairs", async () => {
+    for (const query of ["endpointId=unknown", "limit=0", "limit=1.5", "limit=abc"]) {
+      expect((await worker.fetch(new Request(`https://example.test/api/history?${query}`), testEnv())).status).toBe(400);
+    }
+    const bindings = env as typeof env & { DB: D1Database };
+    await bindings.DB.prepare(
+      `INSERT INTO probe_samples (id, request_id, observed_at, endpoint_id, request_mode,
+       fetch_duration_ms, handler_duration_ms, status, error_category, error_detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind("incomplete:browser", "incomplete", new Date().toISOString(), "sample-post",
+      "browser_direct", 1, null, 200, "none", null).run();
+    const pairs = await worker.fetch(new Request("https://example.test/api/probes"), testEnv());
+    expect((await pairs.json() as Array<{ requestId: string }>).some((row) => row.requestId === "incomplete"))
+      .toBe(false);
+    // Older or manually imported rows can lack handler timing; paired history stays readable.
+    const insert = bindings.DB.prepare(
+      `INSERT INTO probe_samples (id, request_id, observed_at, endpoint_id, request_mode,
+       fetch_duration_ms, handler_duration_ms, status, error_category, error_detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const observedAt = new Date().toISOString();
+    await bindings.DB.batch([
+      insert.bind("legacy:browser", "legacy", observedAt, "sample-post", "browser_direct",
+        10, null, 200, "none", null),
+      insert.bind("legacy:worker", "legacy", observedAt, "sample-post", "worker_proxy",
+        8, null, 200, "none", null),
+    ]);
+    const withLegacy = await worker.fetch(new Request("https://example.test/api/probes"), testEnv());
+    expect((await withLegacy.json() as Array<{ requestId: string; workerHandlerDurationMs: number }>)
+      .find((row) => row.requestId === "legacy")?.workerHandlerDurationMs).toBe(0);
+    const defaultHistory = await worker.fetch(new Request("https://example.test/api/history"), testEnv());
+    expect(defaultHistory.status).toBe(200);
+  });
+
+  it("returns a correlated 500 when D1 cannot persist a completed probe", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("ok")));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = {
+      ...testEnv(),
+      DB: {
+        prepare: () => ({ bind: () => ({}) }),
+        batch: async () => { throw new Error("D1 unavailable"); },
+      } as unknown as D1Database,
+    };
+    const response = await worker.fetch(probeRequest(validBody()), broken);
+    expect(response.status).toBe(500);
+    expect(response.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
+    expect((await response.json() as { requestId: string }).requestId)
+      .toBe(response.headers.get("X-Request-ID"));
+    expect(log).toHaveBeenCalledOnce();
+    log.mockRestore();
+  });
+
+  it("returns 404 for unrecognized paths and methods", async () => {
+    expect((await worker.fetch(new Request("https://example.test/api/other"), testEnv())).status).toBe(404);
+    expect((await worker.fetch(new Request("https://example.test/api/demo/success", {
+      method: "POST",
+    }), testEnv())).status).toBe(404);
   });
 });

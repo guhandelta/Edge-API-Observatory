@@ -79,6 +79,33 @@ describe("Worker API", () => {
     const history = await worker.fetch(new Request("https://example.test/api/probes"), testEnv());
     const runs = await history.json() as Array<{ id: string; requestId: string; workerErrorCategory: string }>;
     expect(runs.some((entry) => entry.id === run.id && entry.requestId === run.requestId && entry.workerErrorCategory === "none")).toBe(true);
+
+    const samplesResponse = await worker.fetch(new Request(
+      "https://example.test/api/history?endpointId=sample-post&limit=100",
+    ), testEnv());
+    const samples = await samplesResponse.json() as Array<{
+      requestId: string; endpointId: string; requestMode: string;
+      fetchDurationMs: number | null; status: number | null; observedAt: string;
+    }>;
+    const pair = samples.filter((sample) => sample.requestId === run.requestId);
+    expect(pair).toHaveLength(2);
+    expect(pair.map((sample) => sample.requestMode).sort()).toEqual(["browser_direct", "worker_proxy"]);
+    expect(pair.every((sample) => sample.endpointId === "sample-post" && sample.observedAt.length > 0)).toBe(true);
+    expect(pair.find((sample) => sample.requestMode === "browser_direct")?.fetchDurationMs).toBe(42);
+    expect(pair.find((sample) => sample.requestMode === "worker_proxy")?.status).toBe(200);
+  });
+
+  it("filters individual history and rejects invalid filters", async () => {
+    const selected = await worker.fetch(new Request(
+      "https://example.test/api/history?endpointId=sample-user&mode=worker_proxy&limit=5",
+    ), testEnv());
+    expect(selected.status).toBe(200);
+    const rows = await selected.json() as Array<{ endpointId: string; requestMode: string }>;
+    expect(rows.every((row) => row.endpointId === "sample-user" && row.requestMode === "worker_proxy")).toBe(true);
+
+    const invalidMode = await worker.fetch(new Request("https://example.test/api/history?mode=other"), testEnv());
+    const invalidLimit = await worker.fetch(new Request("https://example.test/api/history?limit=101"), testEnv());
+    expect([invalidMode.status, invalidLimit.status]).toEqual([400, 400]);
   });
 
   it("categorizes an upstream HTTP error without hiding its status", async () => {

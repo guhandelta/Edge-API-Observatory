@@ -7,11 +7,11 @@ A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. 
 ## What works now
 
 - React + TypeScript + Vite dashboard, served with the Cloudflare Vite plugin.
-- TypeScript Worker with `GET /api/targets`, `GET /api/probes`, and `POST /api/probes`.
+- TypeScript Worker with `GET /api/targets`, `POST /api/probes`, paired `GET /api/probes`, and individual-result `GET /api/history`.
 - Two fixed JSONPlaceholder sample endpoints. The Worker never accepts an arbitrary destination URL.
 - Each `POST /api/probes` receives a UUID request ID in the JSON result and `X-Request-ID` response header, including rejected requests. The result carries upstream status, fetch duration, and a stable error category.
 - Browser-direct fetch and Worker-upstream fetch measured sequentially against the selected endpoint.
-- D1 migration and recent-history table; median durations and Worker error rate for the selected endpoint.
+- Versioned D1 migrations and a `probe_samples` table with one row per request mode. Each row stores its timestamp, endpoint ID, mode, duration, status, and error category; Worker rows also store handler duration. The dashboard shows median durations and Worker error rate.
 - A simple history chart without a charting dependency.
 - Probe requests accept only JSON and at most 2 KiB of input. Upstream bodies are read up to 64 KiB.
 - A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
@@ -36,6 +36,16 @@ Send JSON such as `{"targetId":"sample-post","directDurationMs":null,"directStat
 ```
 
 The complete response also contains the persisted run `id`, timestamp, browser-reported measurements, and Worker error detail. `requestId` equals `id` for a stored run. Error categories are `none`, `http_error`, `timeout`, `network_error`, and `response_too_large`. A timeout is set to eight seconds; upstream response bodies are capped at 64 KiB. Rejected probe requests and internal failures also include a request ID for correlation.
+
+### Individual result history
+
+`GET /api/history` returns individual D1 rows, newest first. Optional query parameters are `endpointId` (an approved target ID), `mode` (`browser_direct` or `worker_proxy`), and `limit` (1–100, default 30). For example:
+
+```text
+/api/history?endpointId=sample-post&mode=worker_proxy&limit=20
+```
+
+Each row has `requestId`, `observedAt`, `endpointId`, `requestMode`, `fetchDurationMs`, `handlerDurationMs`, `status`, `errorCategory`, and `errorDetail`. Browser and Worker rows share a request ID. `GET /api/probes` continues to return up to 30 paired comparisons for the dashboard. Migration `0002_individual_probe_samples.sql` converts existing paired records into individual rows before removing the old table.
 
 ## Requirements
 
@@ -85,7 +95,7 @@ The rate limit is now present; it is approximate and local to each Cloudflare lo
 src/                 React dashboard and styles
 worker/index.ts      Worker API and D1 access
 shared/contracts.ts  Shared target list and data types
-migrations/          Versioned D1 schema
+migrations/          Versioned D1 schema and data conversion
 vite.config.ts       React and Cloudflare Vite plugins
 wrangler.jsonc       Worker, assets, and D1 binding
 worker-configuration.d.ts  Generated binding/runtime types

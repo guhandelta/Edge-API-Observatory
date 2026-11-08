@@ -53,9 +53,16 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Added the device authorization flow to the README and release runbook after the localhost callback timed out twice.
 - Release impact: Cloudflare sign-in and all production gates remain pending.
 
-### 2026-11-07 — `feat: expose probe request IDs and error categories` (this commit)
+### 2026-11-07 — `feat: expose probe request IDs and error categories` (`8f350af`)
 
 - Made the persisted probe UUID an explicit `requestId` in results and an `X-Request-ID` response header, including rejected requests and internal failures.
 - Added stable upstream categories for success, HTTP errors, timeouts, network errors, and oversized responses while retaining the existing dashboard fields.
 - Verified typecheck, the Worker test suite, production build, and a local HTTP 201 probe containing the new fields.
 - Release impact: Step 1's Worker contract is explicit and documented; production D1 and deployment remain pending.
+
+### 2026-11-07 — `feat: store individual D1 probe samples` (this commit)
+
+- Added migration `0002` to convert existing paired records into individual `browser_direct` and `worker_proxy` rows with timestamp, endpoint ID, request mode, timings, status, and error category.
+- Made each new comparison write both rows in one D1 batch transaction. Added filtered `GET /api/history` while preserving paired `GET /api/probes` for the dashboard.
+- Verified nine Worker tests, typecheck/build, local migration of five existing comparisons into ten samples, and a new live local probe that produced one row per mode.
+- Release impact: Step 2 storage and history are complete locally; production D1 migration still awaits Cloudflare authentication.

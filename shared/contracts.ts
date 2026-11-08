@@ -20,6 +20,26 @@ export type ProbeErrorCategory =
   | "network_error"
   | "response_too_large";
 
+/** A browser failure cannot reliably distinguish CORS denial from network loss. */
+export type ProbeSampleErrorCategory = ProbeErrorCategory | "cors_or_network_error";
+
+/** Each stored row represents exactly one request path. */
+export type RequestMode = "browser_direct" | "worker_proxy";
+
+/** Individual D1 result returned by the mode-aware history route. */
+export interface ProbeSample {
+  id: string;
+  requestId: string;
+  observedAt: string;
+  endpointId: string;
+  requestMode: RequestMode;
+  fetchDurationMs: number | null;
+  handlerDurationMs: number | null;
+  status: number | null;
+  errorCategory: ProbeSampleErrorCategory;
+  errorDetail: string | null;
+}
+
 /** Browser results are client-reported; Worker results are measured at the edge. */
 export interface ProbeRun {
   /** The persisted run ID is also the request correlation ID. */

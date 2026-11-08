@@ -1,4 +1,12 @@
-import { TARGETS, type CreateProbeRequest, type ProbeErrorCategory, type ProbeRun } from "../shared/contracts";
+import {
+  TARGETS,
+  type CreateProbeRequest,
+  type ProbeErrorCategory,
+  type ProbeRun,
+  type ProbeSample,
+  type ProbeSampleErrorCategory,
+  type RequestMode,
+} from "../shared/contracts";
 
 /** The D1 binding is configured in wrangler.jsonc. */
 interface Env {
@@ -50,7 +58,8 @@ function parseRequest(value: unknown): CreateProbeRequest | null {
       input.directStatus <= 599);
   const errorValid =
     input.directError === null ||
-    (typeof input.directError === "string" && input.directError.length <= 80);
+    input.directError === "timeout" ||
+    input.directError === "cors_or_network_error";
 
   if (!targetExists || !durationValid || !statusValid || !errorValid) return null;
   return input as unknown as CreateProbeRequest;
@@ -154,24 +163,49 @@ async function probeUpstream(url: string): Promise<{
   }
 }
 
-/** Map a D1 row into the stable JSON contract consumed by the dashboard. */
-function mapRow(row: Record<string, unknown>): ProbeRun {
-  const workerStatus = row.worker_status as number | null;
-  const workerError = row.worker_error as string | null;
+/** Convert one D1 row into the mode-aware result returned by /api/history. */
+function mapSample(row: Record<string, unknown>): ProbeSample {
   return {
     id: String(row.id),
-    requestId: String(row.id),
-    targetId: String(row.target_id),
-    createdAt: String(row.created_at),
-    directDurationMs: row.direct_duration_ms as number | null,
-    directStatus: row.direct_status as number | null,
-    directError: row.direct_error as string | null,
-    workerFetchDurationMs: row.worker_fetch_duration_ms as number | null,
-    workerHandlerDurationMs: Number(row.worker_handler_duration_ms),
-    workerStatus,
-    workerError,
-    workerErrorCategory: errorCategory(workerStatus, workerError),
+    requestId: String(row.request_id),
+    observedAt: String(row.observed_at),
+    endpointId: String(row.endpoint_id),
+    requestMode: row.request_mode as RequestMode,
+    fetchDurationMs: row.fetch_duration_ms as number | null,
+    handlerDurationMs: row.handler_duration_ms as number | null,
+    status: row.status as number | null,
+    errorCategory: row.error_category as ProbeSampleErrorCategory,
+    errorDetail: row.error_detail as string | null,
   };
+}
+
+/** Reassemble the old comparison shape for the existing React dashboard. */
+function pairSamples(samples: ProbeSample[]): ProbeRun[] {
+  const byRequest = new Map<string, Partial<Record<RequestMode, ProbeSample>>>();
+  for (const sample of samples) {
+    const pair = byRequest.get(sample.requestId) ?? {};
+    pair[sample.requestMode] = sample;
+    byRequest.set(sample.requestId, pair);
+  }
+  return [...byRequest.entries()].flatMap(([requestId, pair]) => {
+    const direct = pair.browser_direct;
+    const worker = pair.worker_proxy;
+    if (!direct || !worker) return [];
+    return [{
+      id: requestId,
+      requestId,
+      targetId: worker.endpointId,
+      createdAt: worker.observedAt,
+      directDurationMs: direct.fetchDurationMs,
+      directStatus: direct.status,
+      directError: direct.errorDetail,
+      workerFetchDurationMs: worker.fetchDurationMs,
+      workerHandlerDurationMs: worker.handlerDurationMs ?? 0,
+      workerStatus: worker.status,
+      workerError: worker.errorDetail,
+      workerErrorCategory: worker.errorCategory as ProbeErrorCategory,
+    }];
+  });
 }
 
 /** Run one approved probe and persist both perspectives as one comparison. */
@@ -205,18 +239,27 @@ async function createProbe(request: Request, env: Env, requestId: string): Promi
     workerErrorCategory: errorCategory(upstream.status, upstream.error),
   };
 
-  await env.DB.prepare(
-    `INSERT INTO probe_runs (
-      id, target_id, created_at, direct_duration_ms, direct_status, direct_error,
-      worker_fetch_duration_ms, worker_handler_duration_ms, worker_status, worker_error
+  const insert = env.DB.prepare(
+    `INSERT INTO probe_samples (
+      id, request_id, observed_at, endpoint_id, request_mode, fetch_duration_ms,
+      handler_duration_ms, status, error_category, error_detail
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      run.id, run.targetId, run.createdAt, run.directDurationMs, run.directStatus,
-      run.directError, run.workerFetchDurationMs, run.workerHandlerDurationMs,
-      run.workerStatus, run.workerError,
-    )
-    .run();
+  );
+  // D1 executes the two inserts as one transaction, so history never has half a pair.
+  await env.DB.batch([
+    insert.bind(
+      `${requestId}:browser`, requestId, run.createdAt, target.id, "browser_direct",
+      run.directDurationMs, null, run.directStatus,
+      run.directError === "timeout" ? "timeout" : run.directError ? "cors_or_network_error"
+        : errorCategory(run.directStatus, null),
+      run.directError,
+    ),
+    insert.bind(
+      `${requestId}:worker`, requestId, run.createdAt, target.id, "worker_proxy",
+      run.workerFetchDurationMs, run.workerHandlerDurationMs, run.workerStatus,
+      run.workerErrorCategory, run.workerError,
+    ),
+  ]);
 
   return json(run, 201, requestId);
 }
@@ -224,9 +267,32 @@ async function createProbe(request: Request, env: Env, requestId: string): Promi
 /** Serve recent comparisons for the dashboard. */
 async function listProbes(env: Env): Promise<Response> {
   const result = await env.DB.prepare(
-    "SELECT * FROM probe_runs ORDER BY created_at DESC LIMIT 30",
+    "SELECT * FROM probe_samples ORDER BY observed_at DESC, id DESC LIMIT 60",
   ).all<Record<string, unknown>>();
-  return json(result.results.map(mapRow));
+  return json(pairSamples(result.results.map(mapSample)));
+}
+
+/** Return individual rows with validated endpoint, mode, and size filters. */
+async function listHistory(url: URL, env: Env): Promise<Response> {
+  const endpointId = url.searchParams.get("endpointId");
+  const mode = url.searchParams.get("mode");
+  const limitText = url.searchParams.get("limit") ?? "30";
+  const limit = Number(limitText);
+  if (endpointId !== null && !TARGETS.some((target) => target.id === endpointId)) {
+    return json({ error: "Unknown endpointId." }, 400);
+  }
+  if (mode !== null && mode !== "browser_direct" && mode !== "worker_proxy") {
+    return json({ error: "Unknown request mode." }, 400);
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    return json({ error: "limit must be an integer from 1 to 100." }, 400);
+  }
+  const result = await env.DB.prepare(
+    `SELECT * FROM probe_samples
+     WHERE (?1 IS NULL OR endpoint_id = ?1) AND (?2 IS NULL OR request_mode = ?2)
+     ORDER BY observed_at DESC, id DESC LIMIT ?3`,
+  ).bind(endpointId, mode, limit).all<Record<string, unknown>>();
+  return json(result.results.map(mapSample));
 }
 
 /** The Worker owns only API routes; Vite/Workers Assets serve the React app. */
@@ -242,6 +308,9 @@ export default {
       }
       if (url.pathname === "/api/probes" && request.method === "GET") {
         return await listProbes(env);
+      }
+      if (url.pathname === "/api/history" && request.method === "GET") {
+        return await listHistory(url, env);
       }
       if (url.pathname === "/api/probes" && request.method === "POST") {
         return await createProbe(request, env, requestId!);

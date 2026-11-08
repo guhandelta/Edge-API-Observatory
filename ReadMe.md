@@ -9,16 +9,33 @@ A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. 
 - React + TypeScript + Vite dashboard, served with the Cloudflare Vite plugin.
 - TypeScript Worker with `GET /api/targets`, `GET /api/probes`, and `POST /api/probes`.
 - Two fixed JSONPlaceholder sample endpoints. The Worker never accepts an arbitrary destination URL.
+- Each `POST /api/probes` receives a UUID request ID in the JSON result and `X-Request-ID` response header, including rejected requests. The result carries upstream status, fetch duration, and a stable error category.
 - Browser-direct fetch and Worker-upstream fetch measured sequentially against the selected endpoint.
 - D1 migration and recent-history table; median durations and Worker error rate for the selected endpoint.
 - A simple history chart without a charting dependency.
 - Probe requests accept only JSON and at most 2 KiB of input. Upstream bodies are read up to 64 KiB.
 - A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
-- Five Worker tests cover the allowlist, invalid input, rate-limit response, D1 persistence, and an oversized upstream response.
+- Worker tests cover the allowlist, invalid input, rate-limit response, D1 persistence, oversized responses, and success, HTTP-error, timeout, and network-error categories.
 
 The hardened local release candidate was verified in a browser: both paths returned HTTP 200, and the result remained in D1-backed history after a page refresh. `npm run typecheck`, `npm run test`, and `npm run build` pass.
 
 This is **synthetic testing**, not passive monitoring of an existing API's real traffic. Browser timings are client-reported. Direct browser tests can fail because of CORS, and a difference between browser-direct and Worker-proxied durations does not isolate Worker overhead. The Worker fetch timing includes reading the response body. Worker handler timing is measured internally but is not shown as a precise CPU measurement.
+
+### Probe API result
+
+Send JSON such as `{"targetId":"sample-post","directDurationMs":null,"directStatus":null,"directError":null}` to `POST /api/probes`. A successful probe record returns HTTP 201, even if the approved upstream itself returns an HTTP error; inspect `workerStatus` and `workerErrorCategory` for the upstream outcome. Key fields include:
+
+```json
+{
+  "requestId": "UUID",
+  "targetId": "sample-post",
+  "workerStatus": 200,
+  "workerFetchDurationMs": 148,
+  "workerErrorCategory": "none"
+}
+```
+
+The complete response also contains the persisted run `id`, timestamp, browser-reported measurements, and Worker error detail. `requestId` equals `id` for a stored run. Error categories are `none`, `http_error`, `timeout`, `network_error`, and `response_too_large`. A timeout is set to eight seconds; upstream response bodies are capped at 64 KiB. Rejected probe requests and internal failures also include a request ID for correlation.
 
 ## Requirements
 

@@ -12,9 +12,19 @@ export const TARGETS = [
   },
 ] as const;
 
+/** Stable categories let the UI group failures without parsing error text. */
+export type ProbeErrorCategory =
+  | "none"
+  | "http_error"
+  | "timeout"
+  | "network_error"
+  | "response_too_large";
+
 /** Browser results are client-reported; Worker results are measured at the edge. */
 export interface ProbeRun {
+  /** The persisted run ID is also the request correlation ID. */
   id: string;
+  requestId: string;
   targetId: string;
   createdAt: string;
   directDurationMs: number | null;
@@ -24,6 +34,7 @@ export interface ProbeRun {
   workerHandlerDurationMs: number;
   workerStatus: number | null;
   workerError: string | null;
+  workerErrorCategory: ProbeErrorCategory;
 }
 
 /** Only these browser measurements may be submitted to the Worker. */

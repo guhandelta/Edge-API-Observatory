@@ -1,4 +1,4 @@
-import { TARGETS, type CreateProbeRequest, type ProbeRun } from "../shared/contracts";
+import { TARGETS, type CreateProbeRequest, type ProbeErrorCategory, type ProbeRun } from "../shared/contracts";
 
 /** The D1 binding is configured in wrangler.jsonc. */
 interface Env {
@@ -11,12 +11,24 @@ const UPSTREAM_TIMEOUT_MS = 8_000;
 const MAX_REQUEST_BYTES = 2_048;
 const MAX_RESPONSE_BYTES = 64 * 1_024;
 
-/** Return JSON with a consistent content type and without reusable cache entries. */
-function json(data: unknown, status = 200): Response {
+/** Return uncached JSON and expose the probe ID for tracing a request. */
+function json(data: unknown, status = 200, requestId?: string): Response {
   return Response.json(data, {
     status,
-    headers: { "Cache-Control": "no-store" },
+    headers: {
+      "Cache-Control": "no-store",
+      ...(requestId ? { "X-Request-ID": requestId } : {}),
+    },
   });
+}
+
+/** Keep HTTP failures distinct from transport and response-size failures. */
+function errorCategory(status: number | null, error: string | null): ProbeErrorCategory {
+  if (error === "timeout") return "timeout";
+  if (error === "response_too_large") return "response_too_large";
+  if (error !== null) return "network_error";
+  if (status !== null && status >= 400) return "http_error";
+  return "none";
 }
 
 /** Accept only the small, expected browser measurement shape. */
@@ -116,11 +128,12 @@ async function probeUpstream(url: string): Promise<{
   error: string | null;
 }> {
   const started = performance.now();
+  const signal = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
   try {
     const response = await fetch(url, {
       method: "GET",
       headers: { "Cache-Control": "no-cache" },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal,
     });
     if (!await readBounded(response.body, MAX_RESPONSE_BYTES)) {
       return { durationMs: performance.now() - started, status: response.status, error: "response_too_large" };
@@ -134,15 +147,20 @@ async function probeUpstream(url: string): Promise<{
     return {
       durationMs: performance.now() - started,
       status: null,
-      error: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network_error",
+      error: signal.aborted || (error instanceof Error && error.name === "TimeoutError")
+        ? "timeout"
+        : "network_error",
     };
   }
 }
 
 /** Map a D1 row into the stable JSON contract consumed by the dashboard. */
 function mapRow(row: Record<string, unknown>): ProbeRun {
+  const workerStatus = row.worker_status as number | null;
+  const workerError = row.worker_error as string | null;
   return {
     id: String(row.id),
+    requestId: String(row.id),
     targetId: String(row.target_id),
     createdAt: String(row.created_at),
     directDurationMs: row.direct_duration_ms as number | null,
@@ -150,20 +168,21 @@ function mapRow(row: Record<string, unknown>): ProbeRun {
     directError: row.direct_error as string | null,
     workerFetchDurationMs: row.worker_fetch_duration_ms as number | null,
     workerHandlerDurationMs: Number(row.worker_handler_duration_ms),
-    workerStatus: row.worker_status as number | null,
-    workerError: row.worker_error as string | null,
+    workerStatus,
+    workerError,
+    workerErrorCategory: errorCategory(workerStatus, workerError),
   };
 }
 
 /** Run one approved probe and persist both perspectives as one comparison. */
-async function createProbe(request: Request, env: Env): Promise<Response> {
+async function createProbe(request: Request, env: Env, requestId: string): Promise<Response> {
   // This anonymous demo uses a shared per-location budget to bound total traffic.
   const allowance = await env.PROBE_RATE_LIMITER.limit({ key: "public-probes" });
   if (!allowance.success) {
-    return json({ error: "Probe limit reached. Try again in about a minute." }, 429);
+    return json({ error: "Probe limit reached. Try again in about a minute.", requestId }, 429, requestId);
   }
   const parsed = await readProbeBody(request);
-  if ("error" in parsed) return json({ error: parsed.error }, parsed.status);
+  if ("error" in parsed) return json({ error: parsed.error, requestId }, parsed.status, requestId);
   const { input } = parsed;
 
   const target = TARGETS.find((item) => item.id === input.targetId)!;
@@ -172,7 +191,8 @@ async function createProbe(request: Request, env: Env): Promise<Response> {
   // Worker clocks advance on I/O, so this is handler wall time, not CPU time.
   const handlerDurationMs = performance.now() - handlerStarted;
   const run: ProbeRun = {
-    id: crypto.randomUUID(),
+    id: requestId,
+    requestId,
     targetId: target.id,
     createdAt: new Date().toISOString(),
     directDurationMs: input.directDurationMs,
@@ -182,6 +202,7 @@ async function createProbe(request: Request, env: Env): Promise<Response> {
     workerHandlerDurationMs: handlerDurationMs,
     workerStatus: upstream.status,
     workerError: upstream.error,
+    workerErrorCategory: errorCategory(upstream.status, upstream.error),
   };
 
   await env.DB.prepare(
@@ -197,7 +218,7 @@ async function createProbe(request: Request, env: Env): Promise<Response> {
     )
     .run();
 
-  return json(run, 201);
+  return json(run, 201, requestId);
 }
 
 /** Serve recent comparisons for the dashboard. */
@@ -212,6 +233,9 @@ async function listProbes(env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const requestId = url.pathname === "/api/probes" && request.method === "POST"
+      ? crypto.randomUUID()
+      : undefined;
     try {
       if (url.pathname === "/api/targets" && request.method === "GET") {
         return json(TARGETS);
@@ -220,13 +244,13 @@ export default {
         return await listProbes(env);
       }
       if (url.pathname === "/api/probes" && request.method === "POST") {
-        return await createProbe(request, env);
+        return await createProbe(request, env, requestId!);
       }
       return json({ error: "Route not found." }, 404);
     } catch (error) {
       // Log the full error server-side, but do not expose internals to visitors.
-      console.error("API request failed", error);
-      return json({ error: "The API could not complete this request." }, 500);
+      console.error("API request failed", { requestId, error });
+      return json({ error: "The API could not complete this request.", requestId }, 500, requestId);
     }
   },
 } satisfies ExportedHandler<Env>;

@@ -47,8 +47,15 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Added exact deployment, remote smoke-test, and tag commands plus a v0.1.0 release description draft.
 - Release impact: the production sequence is reviewable while Cloudflare authentication is pending.
 
-### 2026-11-07 — `docs: clarify project-local Wrangler setup` (this commit)
+### 2026-11-07 — `docs: clarify project-local Wrangler setup` (`76e4b65`)
 
 - Clarified that Wrangler and the other build tools are installed through `npm ci`, so no global Wrangler command is required.
 - Added the device authorization flow to the README and release runbook after the localhost callback timed out twice.
 - Release impact: Cloudflare sign-in and all production gates remain pending.
+
+### 2026-11-07 — `feat: expose probe request IDs and error categories` (this commit)
+
+- Made the persisted probe UUID an explicit `requestId` in results and an `X-Request-ID` response header, including rejected requests and internal failures.
+- Added stable upstream categories for success, HTTP errors, timeouts, network errors, and oversized responses while retaining the existing dashboard fields.
+- Verified typecheck, the Worker test suite, production build, and a local HTTP 201 probe containing the new fields.
+- Release impact: Step 1's Worker contract is explicit and documented; production D1 and deployment remain pending.

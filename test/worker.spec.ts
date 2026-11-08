@@ -43,6 +43,9 @@ describe("Worker API", () => {
     }), testEnv());
     const oversized = await worker.fetch(probeRequest("x".repeat(2_100)), testEnv());
     expect([wrongType.status, unknownTarget.status, oversized.status]).toEqual([415, 400, 413]);
+    expect(unknownTarget.headers.get("X-Request-ID")).toMatch(/^[0-9a-f-]{36}$/);
+    expect((await unknownTarget.json() as { requestId: string }).requestId)
+      .toBe(unknownTarget.headers.get("X-Request-ID"));
     expect(upstream).not.toHaveBeenCalled();
   });
 
@@ -63,13 +66,56 @@ describe("Worker API", () => {
       directStatus: 200, directError: null,
     }), testEnv());
     expect(created.status).toBe(201);
-    const run = await created.json() as { id: string; workerStatus: number; directDurationMs: number };
+    const run = await created.json() as {
+      id: string; requestId: string; workerStatus: number;
+      workerErrorCategory: string; directDurationMs: number;
+    };
     expect(run.workerStatus).toBe(200);
+    expect(run.workerErrorCategory).toBe("none");
     expect(run.directDurationMs).toBe(42);
+    expect(run.requestId).toBe(run.id);
+    expect(created.headers.get("X-Request-ID")).toBe(run.requestId);
 
     const history = await worker.fetch(new Request("https://example.test/api/probes"), testEnv());
-    const runs = await history.json() as Array<{ id: string }>;
-    expect(runs.some((entry) => entry.id === run.id)).toBe(true);
+    const runs = await history.json() as Array<{ id: string; requestId: string; workerErrorCategory: string }>;
+    expect(runs.some((entry) => entry.id === run.id && entry.requestId === run.requestId && entry.workerErrorCategory === "none")).toBe(true);
+  });
+
+  it("categorizes an upstream HTTP error without hiding its status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 503 })));
+    const created = await worker.fetch(probeRequest({
+      targetId: "sample-post", directDurationMs: null,
+      directStatus: null, directError: null,
+    }), testEnv());
+    const run = await created.json() as { workerStatus: number; workerErrorCategory: string };
+    expect(run.workerStatus).toBe(503);
+    expect(run.workerErrorCategory).toBe("http_error");
+  });
+
+  it("categorizes a timed-out upstream request", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      const timeout = new Error("Upstream timed out");
+      timeout.name = "TimeoutError";
+      throw timeout;
+    }));
+    const created = await worker.fetch(probeRequest({
+      targetId: "sample-post", directDurationMs: null,
+      directStatus: null, directError: null,
+    }), testEnv());
+    const run = await created.json() as { workerStatus: number | null; workerErrorCategory: string };
+    expect(run.workerStatus).toBeNull();
+    expect(run.workerErrorCategory).toBe("timeout");
+  });
+
+  it("categorizes an upstream network failure without inventing an HTTP status", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Network unavailable"); }));
+    const created = await worker.fetch(probeRequest({
+      targetId: "sample-post", directDurationMs: null,
+      directStatus: null, directError: null,
+    }), testEnv());
+    const run = await created.json() as { workerStatus: number | null; workerErrorCategory: string };
+    expect(run.workerStatus).toBeNull();
+    expect(run.workerErrorCategory).toBe("network_error");
   });
 
   it("stops reading an oversized upstream response", async () => {
@@ -79,7 +125,8 @@ describe("Worker API", () => {
       directStatus: null, directError: "cors_or_network_error",
     }), testEnv());
     expect(created.status).toBe(201);
-    const run = await created.json() as { workerError: string };
+    const run = await created.json() as { workerError: string; workerErrorCategory: string };
     expect(run.workerError).toBe("response_too_large");
+    expect(run.workerErrorCategory).toBe("response_too_large");
   });
 });

@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { TARGETS, type CreateProbeRequest, type ProbeRun } from "../shared/contracts";
 import { STATUS_BUCKETS, summarizeRuns } from "./metrics";
-
-/** Bound chart bars so one unusually slow request cannot break the layout. */
-const MAX_BAR_WIDTH_PX = 380;
+import { applyTheme, type Theme } from "./theme";
 
 /** Format a measured duration without suggesting sub-millisecond precision. */
 function formatMs(value: number | null): string {
@@ -65,12 +63,12 @@ function HistoryChart({ runs }: { runs: ProbeRun[] }) {
           <div className="chart-bars">
             <span
               className="chart-bar direct"
-              style={{ width: Math.min(MAX_BAR_WIDTH_PX, ((run.directDurationMs ?? 0) / largest) * MAX_BAR_WIDTH_PX) }}
+              style={{ width: `${Math.min(100, ((run.directDurationMs ?? 0) / largest) * 100)}%` }}
               title={`Browser direct: ${formatMs(run.directDurationMs)}`}
             />
             <span
               className="chart-bar worker"
-              style={{ width: Math.min(MAX_BAR_WIDTH_PX, ((run.workerFetchDurationMs ?? 0) / largest) * MAX_BAR_WIDTH_PX) }}
+              style={{ width: `${Math.min(100, ((run.workerFetchDurationMs ?? 0) / largest) * 100)}%` }}
               title={`Worker upstream: ${formatMs(run.workerFetchDurationMs)}`}
             />
           </div>
@@ -80,8 +78,23 @@ function HistoryChart({ runs }: { runs: ProbeRun[] }) {
   );
 }
 
-/** Coordinate the browser probe, Worker probe, and persisted history. */
-export default function App() {
+/** Keep the theme control tied to the same palette used by every dashboard panel. */
+function ThemeIcon({ theme }: { theme: Theme }) {
+  return theme === "light" ? (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20.4 14.5A8.7 8.7 0 0 1 9.5 3.6 8.8 8.8 0 1 0 20.4 14.5Z" />
+    </svg>
+  );
+}
+
+/** Coordinate the browser probe, Worker probe, persisted history, and theme. */
+export default function App({ initialTheme }: { initialTheme: Theme }) {
+  const [theme, setTheme] = useState<Theme>(initialTheme);
   const [targetId, setTargetId] = useState<string>(TARGETS[0].id);
   const [batchSize, setBatchSize] = useState<3 | 5>(3);
   const [runs, setRuns] = useState<ProbeRun[]>([]);
@@ -91,6 +104,13 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const target = TARGETS.find((item) => item.id === targetId)!;
+
+  /** Switch the visual palette without interrupting a running probe. */
+  function toggleTheme() {
+    const nextTheme = theme === "light" ? "dark" : "light";
+    applyTheme(nextTheme, true);
+    setTheme(nextTheme);
+  }
 
   // History is optional for reading the page; a missing migration gets a clear message.
   useEffect(() => {
@@ -140,7 +160,13 @@ export default function App() {
     <main className="page">
       <header className="topbar">
         <div className="brand"><span className="brand-mark">◈</span> Edge API Observatory</div>
-        <span className="topbar-note">Synthetic diagnostics · Workers + D1</span>
+        <div className="topbar-actions">
+          <span className="topbar-note">Synthetic diagnostics · Workers + D1</span>
+          <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`} title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}>
+            <ThemeIcon theme={theme} />
+            <span>{theme === "light" ? "Light" : "Dark"}</span>
+          </button>
+        </div>
       </header>
 
       <section className="hero">

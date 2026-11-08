@@ -14,6 +14,7 @@ A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. 
 - Run a batch of three or five browser-direct/Worker-proxied pairs against the same selected endpoint. Each pair runs sequentially and is stored in D1.
 - Versioned D1 migrations and a `probe_samples` table with one row per request mode. Each row stores its timestamp, endpoint ID, mode, duration, status, and error category; Worker rows also store handler duration.
 - Dashboard with a latest-batch median comparison, recent runs table, latency chart, Worker status breakdown, and Worker success rate. The latest batch and any history with fewer than ten comparisons are labeled as small samples.
+- A sun/light and crescent-moon/dark toggle with a muted light palette and a blue-violet-brown dark palette. The app uses the operating system preference until you choose a theme, then remembers that choice in local browser storage.
 - Probe requests accept only JSON and at most 2 KiB of input. Upstream bodies are read up to 64 KiB.
 - A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
 - Worker tests cover the allowlist, invalid input, rate-limit response, D1 persistence, oversized responses, and success, HTTP-error, timeout, and network-error categories.
@@ -97,7 +98,7 @@ The rate limit is now present; it is approximate and local to each Cloudflare lo
 ## Layout
 
 ```text
-src/                 React dashboard and styles
+src/                 React dashboard, theme preference, and styles
 worker/index.ts      Worker API and D1 access
 shared/contracts.ts  Shared target list and data types
 migrations/          Versioned D1 schema and data conversion

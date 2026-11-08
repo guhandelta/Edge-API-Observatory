@@ -81,3 +81,11 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Enabled public self-fetch for the Worker so both request paths reach the same fixture URL; labeled this controlled same-origin comparison in the dashboard and README.
 - Verified 13 tests, production build, and local HTTP probes: success 200, delayed 200 with about 818 ms Worker fetch duration, and error 503 categorized as `http_error`.
 - Release impact: Step 4 is complete locally; public self-fetch verification and production deployment remain pending.
+
+### 2026-11-07 — `feat: add persistent dashboard theme toggle` (this commit)
+
+- Added an accessible sun/light and crescent-moon/dark toggle. The initial palette follows the operating system, and an explicit choice persists in local browser storage.
+- Tuned the light palette to soft neutrals and added a dark blue-violet-brown background with coordinated cards, charts, controls, and status colors.
+- Made chart bars scale to their container so the dashboard does not overflow a narrow viewport.
+- Verified typecheck, production build, both palettes in the browser, persistence after reload, and a 375 px viewport without horizontal page overflow.
+- Release impact: improves the local portfolio dashboard; production deployment remains pending.

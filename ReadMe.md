@@ -26,10 +26,12 @@ This is **synthetic testing**, not passive monitoring of an existing API's real 
 - npm
 - A Cloudflare account only when deploying or creating the remote D1 database
 
+Wrangler, Vite, TypeScript, and Vitest are **project dependencies** in `package.json`; no global installation is needed. Run `npm ci` from this folder to install the versions in `package-lock.json`, then use `npx wrangler ...` for direct Wrangler commands. A bare `wrangler` command is not normally on your shell's global `PATH`.
+
 ## Run locally
 
 ```bash
-npm install
+npm ci
 npm run db:migrate:local
 npm run dev
 ```
@@ -38,10 +40,11 @@ Open the URL printed by Vite. Local development uses a simulated D1 database. If
 
 ## Deploy
 
-1. Create a D1 database named `edge-api-observatory` with Wrangler.
-2. Replace `local-edge-api-observatory` in `wrangler.jsonc` with the database ID returned by Cloudflare.
-3. Apply remote migrations with `npm run db:migrate:remote`.
-4. Run `npm run deploy`.
+1. Run `npx wrangler login --device` and complete the browser verification. Then confirm with `npx wrangler whoami`. The device flow avoids reliance on a short-lived localhost callback.
+2. Create a D1 database named `edge-api-observatory` with `npx wrangler d1 create edge-api-observatory`.
+3. Replace `local-edge-api-observatory` in `wrangler.jsonc` with the database ID returned by Cloudflare, then run `npm run types`.
+4. Apply remote migrations with `npm run db:migrate:remote`.
+5. Run `npm run deploy`.
 
 The placeholder database ID is only for local development; a remote deployment needs a real ID. This project has not been deployed yet.
 The rate limit is now present; it is approximate and local to each Cloudflare location, so it is suitable for a small portfolio demo rather than a strict global quota.

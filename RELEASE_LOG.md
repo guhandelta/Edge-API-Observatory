@@ -42,7 +42,13 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Updated the dashboard screenshot to show the verified local release candidate.
 - Release impact: all local v0.1.0 checks are complete; Cloudflare authentication, production D1, remote deployment, and public verification remain open.
 
-### 2026-11-07 — `docs: prepare production release runbook` (this commit)
+### 2026-11-07 — `docs: prepare production release runbook` (`7bcf107`)
 
 - Added exact deployment, remote smoke-test, and tag commands plus a v0.1.0 release description draft.
 - Release impact: the production sequence is reviewable while Cloudflare authentication is pending.
+
+### 2026-11-07 — `docs: clarify project-local Wrangler setup` (this commit)
+
+- Clarified that Wrangler and the other build tools are installed through `npm ci`, so no global Wrangler command is required.
+- Added the device authorization flow to the README and release runbook after the localhost callback timed out twice.
+- Release impact: Cloudflare sign-in and all production gates remain pending.

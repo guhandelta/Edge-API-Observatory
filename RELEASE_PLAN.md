@@ -16,7 +16,7 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 
 ## Operational steps for deployment
 
-1. Authenticate Wrangler with the intended Cloudflare account. The current Wrangler login is expired.
+1. Install locked project dependencies with `npm ci`, then authenticate the **project-local** Wrangler with the intended Cloudflare account. A bare global `wrangler` command is unnecessary. The current Wrangler login is expired; use `npx wrangler login --device` to avoid the localhost callback timeout.
 2. Create D1 database `edge-api-observatory`, update `wrangler.jsonc` with its returned ID, run `npm run types`, and commit that configuration change.
 3. Apply remote migrations and deploy. Confirm the Worker, D1 binding, rate-limit binding, and static assets are present.
 4. Run one public comparison, refresh the page, and confirm the result persists. Verify a rejected input. The rate-limit test covers the 429 path; the live limit is approximate, so a fixed number of requests is not a reliable assertion.
@@ -30,6 +30,8 @@ Do not describe v0.1.0 as released until the remote smoke test and tag are compl
 Run these from the repository root after Cloudflare sign-in. Substitute the returned D1 UUID into `wrangler.jsonc` before the migration.
 
 ```bash
+npm ci
+npx wrangler login --device
 npx wrangler whoami
 npx wrangler d1 create edge-api-observatory
 npm run types

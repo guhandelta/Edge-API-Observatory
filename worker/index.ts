@@ -3,10 +3,13 @@ import { TARGETS, type CreateProbeRequest, type ProbeRun } from "../shared/contr
 /** The D1 binding is configured in wrangler.jsonc. */
 interface Env {
   DB: D1Database;
+  PROBE_RATE_LIMITER: RateLimit;
 }
 
 /** Keep upstream probes short so one dashboard action cannot tie up a Worker. */
 const UPSTREAM_TIMEOUT_MS = 8_000;
+const MAX_REQUEST_BYTES = 2_048;
+const MAX_RESPONSE_BYTES = 64 * 1_024;
 
 /** Return JSON with a consistent content type and without reusable cache entries. */
 function json(data: unknown, status = 200): Response {
@@ -41,6 +44,71 @@ function parseRequest(value: unknown): CreateProbeRequest | null {
   return input as unknown as CreateProbeRequest;
 }
 
+/** Read a stream up to a fixed byte limit, including when Content-Length is absent. */
+async function readBounded(stream: ReadableStream<Uint8Array> | null, limit: number): Promise<boolean> {
+  if (!stream) return true;
+  const reader = stream.getReader();
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return true;
+      received += value.byteLength;
+      if (received > limit) {
+        await reader.cancel();
+        return false;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** Parse a small JSON request without trusting its Content-Length header. */
+async function readProbeBody(request: Request): Promise<
+  | { input: CreateProbeRequest }
+  | { status: number; error: string }
+> {
+  if (request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") {
+    return { status: 415, error: "Content-Type must be application/json." };
+  }
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_REQUEST_BYTES) {
+    return { status: 413, error: "Request body is too large." };
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) return { status: 400, error: "Expected a JSON request body." };
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_REQUEST_BYTES) {
+        await reader.cancel();
+        return { status: 413, error: "Request body is too large." };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const input = parseRequest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+    return input ? { input } : { status: 400, error: "Invalid probe request." };
+  } catch {
+    return { status: 400, error: "Expected a valid JSON request body." };
+  }
+}
+
 /** Measure elapsed fetch I/O, including reading the response body. */
 async function probeUpstream(url: string): Promise<{
   durationMs: number | null;
@@ -54,7 +122,9 @@ async function probeUpstream(url: string): Promise<{
       headers: { "Cache-Control": "no-cache" },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
-    await response.arrayBuffer();
+    if (!await readBounded(response.body, MAX_RESPONSE_BYTES)) {
+      return { durationMs: performance.now() - started, status: response.status, error: "response_too_large" };
+    }
     return {
       durationMs: performance.now() - started,
       status: response.status,
@@ -87,18 +157,14 @@ function mapRow(row: Record<string, unknown>): ProbeRun {
 
 /** Run one approved probe and persist both perspectives as one comparison. */
 async function createProbe(request: Request, env: Env): Promise<Response> {
-  if (Number(request.headers.get("content-length") ?? 0) > 2_048) {
-    return json({ error: "Request body is too large." }, 413);
+  // This anonymous demo uses a shared per-location budget to bound total traffic.
+  const allowance = await env.PROBE_RATE_LIMITER.limit({ key: "public-probes" });
+  if (!allowance.success) {
+    return json({ error: "Probe limit reached. Try again in about a minute." }, 429);
   }
-
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "Expected a JSON request body." }, 400);
-  }
-  const input = parseRequest(body);
-  if (!input) return json({ error: "Invalid probe request." }, 400);
+  const parsed = await readProbeBody(request);
+  if ("error" in parsed) return json({ error: parsed.error }, parsed.status);
+  const { input } = parsed;
 
   const target = TARGETS.find((item) => item.id === input.targetId)!;
   const handlerStarted = performance.now();

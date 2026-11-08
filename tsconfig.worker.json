@@ -9,8 +9,7 @@
     "noEmit": true,
     "strict": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "types": ["@cloudflare/workers-types"]
+    "noUnusedParameters": true
   },
-  "include": ["worker", "shared"]
+  "include": ["worker", "shared", "worker-configuration.d.ts"]
 }

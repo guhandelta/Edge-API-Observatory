@@ -14,8 +14,15 @@ Add an entry here **in each commit**. Record user-visible changes, verification,
 - Verified a production build, local D1 migration, and a browser comparison with both paths returning HTTP 200.
 - Release impact: establishes the local v0.1.0 prototype; no production deployment.
 
-### 2026-11-07 — `docs: define initial release gates` (this commit)
+### 2026-11-07 — `docs: define initial release gates` (`fceaece`)
 
 - Added the release checklist and this commit/release log; future commits must update this log.
 - Verified the existing repo state and Cloudflare/GitHub authentication status.
 - Release impact: records the remaining work and external account gates without claiming a release.
+
+### 2026-11-07 — `feat: harden probes and add Worker tests` (this commit)
+
+- Limited JSON request bodies to 2 KiB and upstream response reads to 64 KiB. Added the Cloudflare rate-limit binding for a shared anonymous budget.
+- Added Wrangler-generated binding types and five tests for the allowlist, validation, rate-limit response, D1 persistence, and oversized responses.
+- Verified typecheck, tests, build, the local migration state, and a live local probe write.
+- Release impact: the local release candidate now has bounded probe inputs and automated Worker coverage. Production deployment remains open.

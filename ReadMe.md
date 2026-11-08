@@ -12,6 +12,9 @@ A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. 
 - Browser-direct fetch and Worker-upstream fetch measured sequentially against the selected endpoint.
 - D1 migration and recent-history table; median durations and Worker error rate for the selected endpoint.
 - A simple history chart without a charting dependency.
+- Probe requests accept only JSON and at most 2 KiB of input. Upstream bodies are read up to 64 KiB.
+- A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
+- Five Worker tests cover the allowlist, invalid input, rate-limit response, D1 persistence, and an oversized upstream response.
 
 The initial local comparison was verified in a browser: both paths returned HTTP 200 and the result appeared in the D1-backed history.
 
@@ -40,7 +43,8 @@ Open the URL printed by Vite. Local development uses a simulated D1 database. If
 3. Apply remote migrations with `npm run db:migrate:remote`.
 4. Run `npm run deploy`.
 
-The placeholder database ID is only for local development; a remote deployment needs a real ID. This project has not been deployed yet. Before making a public demo broadly available, add request rate limiting to the probe route to prevent excessive traffic or D1 writes.
+The placeholder database ID is only for local development; a remote deployment needs a real ID. This project has not been deployed yet.
+The rate limit is now present; it is approximate and local to each Cloudflare location, so it is suitable for a small portfolio demo rather than a strict global quota.
 
 ## Commands
 
@@ -48,6 +52,8 @@ The placeholder database ID is only for local development; a remote deployment n
 | --- | --- |
 | `npm run dev` | Start the local Vite and Worker runtime |
 | `npm run typecheck` | Check the React, Worker, and config TypeScript |
+| `npm run types` | Regenerate binding/runtime types after changing `wrangler.jsonc` |
+| `npm run test` | Run Worker tests in the Cloudflare runtime |
 | `npm run build` | Typecheck and build the frontend/Worker |
 | `npm run db:migrate:local` | Apply the D1 schema locally |
 | `npm run db:migrate:remote` | Apply the D1 schema remotely |
@@ -62,10 +68,13 @@ shared/contracts.ts  Shared target list and data types
 migrations/          Versioned D1 schema
 vite.config.ts       React and Cloudflare Vite plugins
 wrangler.jsonc       Worker, assets, and D1 binding
+worker-configuration.d.ts  Generated binding/runtime types
+test/                Worker tests and migration setup
+vitest.config.ts     Cloudflare Vitest runtime configuration
 ```
 
 ## Next improvements
 
-Add a controlled test endpoint with configurable delay/error responses, request rate limiting, focused Worker tests, and optional Cloudflare traces. Keep this README in sync as those features are implemented.
+Add a controlled test endpoint with configurable delay/error responses and optional Cloudflare traces. Keep this README in sync as those features are implemented.
 
 See `RELEASE_PLAN.md` for the initial release gates and `RELEASE_LOG.md` for the entry included with each commit and the current release status.

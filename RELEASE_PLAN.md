@@ -6,9 +6,9 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 
 - [x] React dashboard, Worker API, D1 migration, and fixed target allowlist exist.
 - [x] Local comparison returned HTTP 200 on both paths and appeared in D1 history.
-- [ ] Bound request bodies and response reads; reject unexpected request content types.
-- [ ] Add Cloudflare rate limiting to the probe route and verify its response.
-- [ ] Add automated Worker tests covering validation, storage, and error paths.
+- [x] Bound request bodies and response reads; reject unexpected request content types.
+- [x] Add Cloudflare rate limiting to the probe route and verify its 429 response in a Worker test.
+- [x] Add automated Worker tests covering validation, storage, and error paths.
 - [ ] Run typecheck, tests, build, and a fresh local migration and browser smoke test.
 - [ ] Create the production D1 database and replace the placeholder database ID.
 - [ ] Apply the remote migration, deploy the Worker, and verify the public URL from a browser.

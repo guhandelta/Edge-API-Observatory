@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "strict": true,
+    "types": ["@cloudflare/vitest-plugin/types", "vitest/globals"]
+  },
+  "include": ["test", "shared", "worker", "worker-configuration.d.ts"]
+}

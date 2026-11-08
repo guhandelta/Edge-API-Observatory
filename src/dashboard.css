@@ -1,0 +1,31 @@
+/* Batch controls and outcome panels extend the original compact dashboard styles. */
+.control-fields{display:flex;align-items:end;gap:12px}
+.control-field{display:flex;flex-direction:column;gap:8px;min-width:145px}
+.control-field:first-child{min-width:195px}
+.control-fields label{grid-column:auto;color:#52627b;font-size:12px;font-weight:700}
+.control-fields button{min-width:150px}
+.batch-result{margin-top:18px;padding:26px 32px}
+.batch-heading{display:flex;align-items:start;justify-content:space-between;gap:18px}
+.batch-heading h2{margin-bottom:0}
+.sample-badge{display:inline-block;flex:none;padding:8px 11px;border-radius:999px;background:#fff5d8;color:#865b00;font-size:12px;font-weight:750}
+.batch-medians{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin:22px 0 18px}
+.batch-medians>div{display:flex;flex-direction:column;gap:7px;padding:19px;border-radius:12px;background:#f5f7fc}
+.batch-medians span{font-size:12px;color:#64738c;font-weight:700}
+.batch-medians strong{font-size:26px;letter-spacing:-.045em}
+.batch-medians small{color:#7c8aa1}
+.status-panel{padding:27px 32px;margin-bottom:18px}
+.status-panel .section-head{align-items:center}
+.status-stack{display:flex;height:16px;width:100%;overflow:hidden;border-radius:999px;background:#e9eef6;margin:22px 0 17px}
+.status-segment{height:100%}
+.status-2xx{background:#2eaf83}
+.status-3xx{background:#4a90d9}
+.status-4xx{background:#e9a23b}
+.status-5xx{background:#de6767}
+.status-fetcherror{background:#9c73c9}
+.status-legend{display:flex;flex-wrap:wrap;gap:10px 18px;color:#586982;font-size:12px}
+.status-legend span{display:inline-flex;align-items:center;gap:6px}
+.status-legend strong{color:#23324a}
+.status-dot{height:9px;width:9px;border-radius:3px}
+.sample-note{margin:18px 0 0;color:#865b00;font-size:12px;font-weight:650}
+@media(max-width:900px){.controls{align-items:stretch;flex-direction:column}.control-fields{justify-content:space-between}}
+@media(max-width:600px){.control-fields{flex-wrap:wrap}.control-field,.control-field:first-child{flex:1;min-width:130px}.control-fields button{width:100%}.batch-heading{flex-direction:column}.batch-medians{grid-template-columns:1fr}.status-panel,.batch-result{padding:22px}}

@@ -60,9 +60,16 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Verified typecheck, the Worker test suite, production build, and a local HTTP 201 probe containing the new fields.
 - Release impact: Step 1's Worker contract is explicit and documented; production D1 and deployment remain pending.
 
-### 2026-11-07 — `feat: store individual D1 probe samples` (this commit)
+### 2026-11-07 — `feat: store individual D1 probe samples` (`42fcde6`)
 
 - Added migration `0002` to convert existing paired records into individual `browser_direct` and `worker_proxy` rows with timestamp, endpoint ID, request mode, timings, status, and error category.
 - Made each new comparison write both rows in one D1 batch transaction. Added filtered `GET /api/history` while preserving paired `GET /api/probes` for the dashboard.
 - Verified nine Worker tests, typecheck/build, local migration of five existing comparisons into ten samples, and a new live local probe that produced one row per mode.
 - Release impact: Step 2 storage and history are complete locally; production D1 migration still awaits Cloudflare authentication.
+
+### 2026-11-07 — `feat: add batch diagnostics dashboard` (this commit)
+
+- Added three- or five-pair runs against one selected endpoint, last-batch median comparison with measured counts, a small-sample label, Worker success rate, and a status breakdown alongside the existing latency chart and recent runs table.
+- Added focused metric tests and refreshed the full-page dashboard preview.
+- Verified 11 tests, production build, and a three-pair browser run. In that local run, the browser-direct median was 147 ms and the Worker-upstream median was 33 ms, each from three measured samples; the UI labels this as a small sample and does not treat the difference as Worker overhead.
+- Release impact: Step 3 is complete locally; production deployment remains pending.

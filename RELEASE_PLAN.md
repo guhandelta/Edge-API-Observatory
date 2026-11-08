@@ -4,7 +4,7 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 
 ## Release gates
 
-- [x] React dashboard, Worker API, D1 migrations, individual mode-aware history, and fixed target allowlist exist.
+- [x] React dashboard with batch median comparison, latency chart, status breakdown, success rate, and recent runs; Worker API, D1 migrations, individual mode-aware history, and fixed target allowlist exist.
 - [x] Local comparison returned HTTP 200 on both paths and appeared in D1 history.
 - [x] Bound request bodies and response reads; reject unexpected request content types.
 - [x] Add Cloudflare rate limiting to the probe route and verify its 429 response in a Worker test.

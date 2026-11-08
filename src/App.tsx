@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { TARGETS, type CreateProbeRequest, type ProbeRun } from "../shared/contracts";
+import { STATUS_BUCKETS, summarizeRuns } from "./metrics";
 
 /** Bound chart bars so one unusually slow request cannot break the layout. */
 const MAX_BAR_WIDTH_PX = 380;
@@ -47,16 +48,6 @@ async function readApi<T>(response: Response): Promise<T> {
   return data as T;
 }
 
-/** Median is less sensitive to one slow network request than an average. */
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? (sorted[middle - 1] + sorted[middle]) / 2
-    : sorted[middle];
-}
-
 /** Display a small history chart without adding a charting dependency. */
 function HistoryChart({ runs }: { runs: ProbeRun[] }) {
   const recent = [...runs].reverse().slice(-10);
@@ -92,9 +83,12 @@ function HistoryChart({ runs }: { runs: ProbeRun[] }) {
 /** Coordinate the browser probe, Worker probe, and persisted history. */
 export default function App() {
   const [targetId, setTargetId] = useState<string>(TARGETS[0].id);
+  const [batchSize, setBatchSize] = useState<3 | 5>(3);
   const [runs, setRuns] = useState<ProbeRun[]>([]);
+  const [lastBatch, setLastBatch] = useState<{ targetId: string; requested: number; runs: ProbeRun[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const target = TARGETS.find((item) => item.id === targetId)!;
 
@@ -103,37 +97,41 @@ export default function App() {
     fetch("/api/probes")
       .then((response) => readApi<ProbeRun[]>(response))
       .then(setRuns)
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Could not load history."))
+      .catch((cause: unknown) => setError(
+        `${cause instanceof Error ? cause.message : "Could not load history."} Check local D1 migrations if needed.`,
+      ))
       .finally(() => setLoading(false));
   }, []);
 
-  const summary = useMemo(() => {
-    const selected = runs.filter((run) => run.targetId === targetId);
-    const failed = selected.filter((run) => run.workerError !== null || (run.workerStatus ?? 0) >= 400);
-    return {
-      count: selected.length,
-      directMedian: median(selected.flatMap((run) => run.directDurationMs === null ? [] : [run.directDurationMs])),
-      workerMedian: median(selected.flatMap((run) => run.workerFetchDurationMs === null ? [] : [run.workerFetchDurationMs])),
-      errorRate: selected.length === 0 ? null : Math.round((failed.length / selected.length) * 100),
-    };
-  }, [runs, targetId]);
+  const selectedRuns = useMemo(() => runs.filter((run) => run.targetId === targetId), [runs, targetId]);
+  const summary = useMemo(() => summarizeRuns(selectedRuns), [selectedRuns]);
+  const visibleBatch = lastBatch?.targetId === targetId ? lastBatch : null;
+  const batchSummary = visibleBatch ? summarizeRuns(visibleBatch.runs) : null;
 
-  /** Run the two paths in sequence so the browser and Worker use the same target. */
-  async function runComparison() {
+  /** Run each browser/Worker pair sequentially against one fixed endpoint. */
+  async function runBatch() {
     setRunning(true);
     setError(null);
+    setProgress(0);
+    setLastBatch(null);
+    const completed: ProbeRun[] = [];
     try {
-      const direct = await measureDirect(target.url);
-      const response = await fetch("/api/probes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ targetId, ...direct } satisfies CreateProbeRequest),
-      });
-      const run = await readApi<ProbeRun>(response);
-      setRuns((current) => [run, ...current].slice(0, 30));
+      for (let index = 0; index < batchSize; index += 1) {
+        const direct = await measureDirect(target.url);
+        const response = await fetch("/api/probes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targetId, ...direct } satisfies CreateProbeRequest),
+        });
+        const run = await readApi<ProbeRun>(response);
+        completed.push(run);
+        setProgress(index + 1);
+        setRuns((current) => [run, ...current].slice(0, 30));
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Comparison failed.");
+      setError(`${cause instanceof Error ? cause.message : "Comparison failed."} ${completed.length} of ${batchSize} comparisons completed.`);
     } finally {
+      if (completed.length > 0) setLastBatch({ targetId, requested: batchSize, runs: completed });
       setRunning(false);
     }
   }
@@ -155,37 +153,64 @@ export default function App() {
         <div>
           <p className="section-kicker">01 / PROBE</p>
           <h2 id="probe-heading">Run a comparison</h2>
-          <p className="muted">Both requests use the same approved sample API endpoint.</p>
+          <p className="muted">Each pair uses the same approved endpoint. Pairs run sequentially.</p>
         </div>
         <div className="control-fields">
-          <label htmlFor="target">Target API</label>
-          <select id="target" value={targetId} onChange={(event) => setTargetId(event.target.value)} disabled={running}>
-            {TARGETS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </select>
-          <button onClick={runComparison} disabled={running}>{running ? "Measuring…" : "Run comparison →"}</button>
+          <div className="control-field"><label htmlFor="target">Target API</label>
+            <select id="target" value={targetId} onChange={(event) => { setTargetId(event.target.value); setLastBatch(null); }} disabled={running}>
+              {TARGETS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </div>
+          <div className="control-field"><label htmlFor="batch-size">Pairs to run</label>
+            <select id="batch-size" value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value) as 3 | 5)} disabled={running}>
+              <option value={3}>3 pairs</option>
+              <option value={5}>5 pairs</option>
+            </select>
+          </div>
+          <button onClick={runBatch} disabled={running}>{running ? `Running ${progress}/${batchSize}…` : `Run ${batchSize} pairs →`}</button>
         </div>
       </section>
 
-      {error && <div className="error" role="alert">{error} If the API is unavailable locally, check that D1 migrations have been applied.</div>}
+      {error && <div className="error" role="alert">{error}</div>}
+
+      {visibleBatch && batchSummary && <section className="panel batch-result" aria-label="Last batch median comparison">
+        <div className="batch-heading"><div><p className="section-kicker">LATEST BATCH</p><h2>{target.name} · {batchSummary.comparisons}/{visibleBatch.requested} pairs</h2></div><span className="sample-badge">Small sample · n &lt; 10</span></div>
+        <div className="batch-medians">
+          <div><span>Browser direct median</span><strong>{formatMs(batchSummary.directMedian)}</strong><small>n={batchSummary.directMeasured} measured</small></div>
+          <div><span>Worker upstream median</span><strong>{formatMs(batchSummary.workerMedian)}</strong><small>n={batchSummary.workerMeasured} measured</small></div>
+        </div>
+        <p className="muted">These medians compare two network paths. Their difference does not measure Worker overhead.</p>
+      </section>}
 
       <section className="metrics" aria-label="Selected target summary">
-        <div className="metric"><span>Comparisons</span><strong>{summary.count}</strong><small>Selected endpoint</small></div>
-        <div className="metric"><span>Browser median</span><strong>{formatMs(summary.directMedian)}</strong><small>Visitor → upstream</small></div>
-        <div className="metric"><span>Worker fetch median</span><strong>{formatMs(summary.workerMedian)}</strong><small>Edge → upstream</small></div>
-        <div className="metric"><span>Worker error rate</span><strong>{summary.errorRate === null ? "—" : `${summary.errorRate}%`}</strong><small>HTTP 4xx/5xx or fetch error</small></div>
+        <div className="metric"><span>Recent comparisons</span><strong>{summary.comparisons}</strong><small>Selected endpoint · up to 30 total stored</small></div>
+        <div className="metric"><span>Browser median</span><strong>{formatMs(summary.directMedian)}</strong><small>n={summary.directMeasured} measured</small></div>
+        <div className="metric"><span>Worker fetch median</span><strong>{formatMs(summary.workerMedian)}</strong><small>n={summary.workerMeasured} measured</small></div>
+        <div className="metric"><span>Worker success rate</span><strong>{summary.workerSuccessRate === null ? "—" : `${summary.workerSuccessRate}%`}</strong><small>2xx with no fetch error · n={summary.comparisons}</small></div>
+      </section>
+
+      <section className="panel status-panel" aria-labelledby="status-heading">
+        <div className="section-head"><div><p className="section-kicker">02 / OUTCOMES</p><h2 id="status-heading">Worker status breakdown</h2></div><span className="muted">{summary.comparisons} recent results</span></div>
+        {summary.comparisons > 0 ? <>
+          <div className="status-stack" role="img" aria-label={STATUS_BUCKETS.map((bucket) => `${bucket}: ${summary.statusCounts[bucket]}`).join(", ")}>
+            {STATUS_BUCKETS.map((bucket) => summary.statusCounts[bucket] > 0 && <span key={bucket} className={`status-segment status-${bucket.replace(/[^a-z0-9]/gi, "").toLowerCase()}`} style={{ width: `${(summary.statusCounts[bucket] / summary.comparisons) * 100}%` }} />)}
+          </div>
+          <div className="status-legend">{STATUS_BUCKETS.map((bucket) => <span key={bucket}><i className={`status-dot status-${bucket.replace(/[^a-z0-9]/gi, "").toLowerCase()}`} />{bucket}: <strong>{summary.statusCounts[bucket]}</strong></span>)}</div>
+        </> : <p className="empty">No Worker results for this endpoint yet.</p>}
+        {summary.comparisons > 0 && summary.comparisons < 10 && <p className="sample-note">Small sample: fewer than 10 comparisons. Treat rates and medians as directional.</p>}
       </section>
 
       <section className="panel history" aria-labelledby="history-heading">
         <div className="section-head">
-          <div><p className="section-kicker">02 / HISTORY</p><h2 id="history-heading">Recent measurements</h2></div>
+          <div><p className="section-kicker">03 / HISTORY</p><h2 id="history-heading">Recent measurements</h2></div>
           <div className="legend"><span><i className="legend-direct" /> Browser direct</span><span><i className="legend-worker" /> Worker upstream</span></div>
         </div>
-        {loading ? <p className="empty">Loading history…</p> : <HistoryChart runs={runs.filter((run) => run.targetId === targetId)} />}
+        {loading ? <p className="empty">Loading history…</p> : <HistoryChart runs={selectedRuns} />}
         <div className="table-wrap">
           <table>
             <thead><tr><th>Time</th><th>Target</th><th>Browser</th><th>Browser status</th><th>Worker fetch</th><th>Worker status</th></tr></thead>
             <tbody>
-              {runs.filter((run) => run.targetId === targetId).slice(0, 8).map((run) => (
+              {selectedRuns.slice(0, 8).map((run) => (
                 <tr key={run.id}>
                   <td>{new Date(run.createdAt).toLocaleString()}</td>
                   <td>{target.name}</td>
@@ -195,7 +220,7 @@ export default function App() {
                   <td>{run.workerError ?? run.workerStatus ?? "—"}</td>
                 </tr>
               ))}
-              {runs.filter((run) => run.targetId === targetId).length === 0 && <tr><td colSpan={6} className="empty">No measurements yet.</td></tr>}
+              {selectedRuns.length === 0 && <tr><td colSpan={6} className="empty">No measurements yet.</td></tr>}
             </tbody>
           </table>
         </div>

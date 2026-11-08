@@ -18,6 +18,19 @@ interface Env {
 const UPSTREAM_TIMEOUT_MS = 8_000;
 const MAX_REQUEST_BYTES = 2_048;
 const MAX_RESPONSE_BYTES = 64 * 1_024;
+const DEMO_DELAY_MS = 750;
+
+/** Fixed fixture routes make status outcomes repeatable without an open proxy. */
+async function demoResponse(pathname: string): Promise<Response> {
+  if (pathname === "/api/demo/delay") {
+    await new Promise<void>((resolve) => setTimeout(resolve, DEMO_DELAY_MS));
+    return json({ scenario: "delay", delayMs: DEMO_DELAY_MS, ok: true });
+  }
+  if (pathname === "/api/demo/error") {
+    return json({ scenario: "error", error: "Intentional demo failure." }, 503);
+  }
+  return json({ scenario: "success", ok: true });
+}
 
 /** Return uncached JSON and expose the probe ID for tracing a request. */
 function json(data: unknown, status = 200, requestId?: string): Response {
@@ -221,7 +234,8 @@ async function createProbe(request: Request, env: Env, requestId: string): Promi
 
   const target = TARGETS.find((item) => item.id === input.targetId)!;
   const handlerStarted = performance.now();
-  const upstream = await probeUpstream(target.url);
+  // Relative fixture URLs resolve to this public Worker origin for both request modes.
+  const upstream = await probeUpstream(new URL(target.url, request.url).href);
   // Worker clocks advance on I/O, so this is handler wall time, not CPU time.
   const handlerDurationMs = performance.now() - handlerStarted;
   const run: ProbeRun = {
@@ -303,6 +317,10 @@ export default {
       ? crypto.randomUUID()
       : undefined;
     try {
+      if (request.method === "GET" &&
+        (url.pathname === "/api/demo/success" || url.pathname === "/api/demo/delay" || url.pathname === "/api/demo/error")) {
+        return await demoResponse(url.pathname);
+      }
       if (url.pathname === "/api/targets" && request.method === "GET") {
         return json(TARGETS);
       }

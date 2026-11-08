@@ -9,6 +9,7 @@ Add an entry here **in each commit**. Record user-visible changes, verification,
 ### v0.1.0 release description draft
 
 - Synthetic comparison of browser-direct and Cloudflare Worker requests to approved sample APIs.
+- Controlled same-origin success, 750 ms delay, and HTTP 503 fixtures for repeatable demonstrations.
 - D1-backed history, median durations, status codes, error rate, and a compact latency chart.
 - Bounded request/response bodies, an approximate rate limit, and Worker tests.
 - Measurement note: these paths have different network routes. Their duration difference does not isolate Worker overhead; direct browser access can be unavailable because of CORS.
@@ -73,3 +74,10 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Added focused metric tests and refreshed the full-page dashboard preview.
 - Verified 11 tests, production build, and a three-pair browser run. In that local run, the browser-direct median was 147 ms and the Worker-upstream median was 33 ms, each from three measured samples; the UI labels this as a small sample and does not treat the difference as Worker overhead.
 - Release impact: Step 3 is complete locally; production deployment remains pending.
+
+### 2026-11-07 — `feat: add controlled demo probe endpoints` (this commit)
+
+- Added fixed Worker-hosted success, 750 ms delay, and HTTP 503 routes and included them in the approved probe targets.
+- Enabled public self-fetch for the Worker so both request paths reach the same fixture URL; labeled this controlled same-origin comparison in the dashboard and README.
+- Verified 13 tests, production build, and local HTTP probes: success 200, delayed 200 with about 818 ms Worker fetch duration, and error 503 categorized as `http_error`.
+- Release impact: Step 4 is complete locally; public self-fetch verification and production deployment remain pending.

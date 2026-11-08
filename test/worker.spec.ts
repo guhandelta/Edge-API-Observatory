@@ -29,8 +29,36 @@ describe("Worker API", () => {
     const response = await worker.fetch(new Request("https://example.test/api/targets"), testEnv());
     expect(response.status).toBe(200);
     const targets = await response.json() as Array<{ id: string; url: string }>;
-    expect(targets.map((target) => target.id)).toEqual(["sample-post", "sample-user"]);
-    expect(targets.every((target) => target.url.startsWith("https://jsonplaceholder.typicode.com/"))).toBe(true);
+    expect(targets.map((target) => target.id)).toEqual([
+      "sample-post", "sample-user", "demo-success", "demo-delay", "demo-error",
+    ]);
+    expect(targets.map((target) => target.url).filter((url) => url.startsWith("/")))
+      .toEqual(["/api/demo/success", "/api/demo/delay", "/api/demo/error"]);
+  });
+
+  it("serves fixed success, delayed success, and HTTP error fixtures", async () => {
+    const success = await worker.fetch(new Request("https://example.test/api/demo/success"), testEnv());
+    const started = performance.now();
+    const delayed = await worker.fetch(new Request("https://example.test/api/demo/delay"), testEnv());
+    const elapsedMs = performance.now() - started;
+    const failed = await worker.fetch(new Request("https://example.test/api/demo/error"), testEnv());
+    expect([success.status, delayed.status, failed.status]).toEqual([200, 200, 503]);
+    expect((await delayed.json() as { delayMs: number }).delayMs).toBe(750);
+    expect(elapsedMs).toBeGreaterThanOrEqual(700);
+    expect((await failed.json() as { scenario: string }).scenario).toBe("error");
+    expect(success.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("resolves a fixture probe to the same public origin", async () => {
+    const upstream = vi.fn(async () => new Response('{"scenario":"error"}', { status: 503 }));
+    vi.stubGlobal("fetch", upstream);
+    const created = await worker.fetch(probeRequest({
+      targetId: "demo-error", directDurationMs: 25, directStatus: 503, directError: null,
+    }), testEnv());
+    const run = await created.json() as { workerStatus: number; workerErrorCategory: string };
+    expect(upstream).toHaveBeenCalledWith("https://example.test/api/demo/error", expect.any(Object));
+    expect(run.workerStatus).toBe(503);
+    expect(run.workerErrorCategory).toBe("http_error");
   });
 
   it("rejects unsupported input before an upstream fetch", async () => {

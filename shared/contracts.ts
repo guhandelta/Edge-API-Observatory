@@ -10,6 +10,9 @@ export const TARGETS = [
     name: "Sample user",
     url: "https://jsonplaceholder.typicode.com/users/1",
   },
+  { id: "demo-success", name: "Demo · success", url: "/api/demo/success" },
+  { id: "demo-delay", name: "Demo · 750 ms delay", url: "/api/demo/delay" },
+  { id: "demo-error", name: "Demo · HTTP 503", url: "/api/demo/error" },
 ] as const;
 
 /** Stable categories let the UI group failures without parsing error text. */

@@ -154,6 +154,7 @@ export default function App() {
           <p className="section-kicker">01 / PROBE</p>
           <h2 id="probe-heading">Run a comparison</h2>
           <p className="muted">Each pair uses the same approved endpoint. Pairs run sequentially.</p>
+          {target.id.startsWith("demo-") && <p className="muted">Controlled demo: both paths reach this app's Worker-hosted fixture. Status and programmed delay are fixed; observed latency still varies.</p>}
         </div>
         <div className="control-fields">
           <div className="control-field"><label htmlFor="target">Target API</label>

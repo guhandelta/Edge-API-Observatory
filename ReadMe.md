@@ -1,6 +1,6 @@
 # Edge API Observatory
 
-A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. It measures the same approved sample API from two places: directly in the visitor's browser and through a Cloudflare Worker. The Worker records comparisons in D1, and the React dashboard shows recent latency, status, and error results.
+A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. It measures the same approved endpoint from two places: directly in the visitor's browser and through a Cloudflare Worker. The Worker records comparisons in D1, and the React dashboard shows recent latency, status, and error results.
 
 ![Dashboard preview](docs/dashboard-preview.png)
 
@@ -8,7 +8,8 @@ A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. 
 
 - React + TypeScript + Vite dashboard, served with the Cloudflare Vite plugin.
 - TypeScript Worker with `GET /api/targets`, `POST /api/probes`, paired `GET /api/probes`, and individual-result `GET /api/history`.
-- Two fixed JSONPlaceholder sample endpoints. The Worker never accepts an arbitrary destination URL.
+- Two fixed JSONPlaceholder sample endpoints and three Worker-hosted demo fixtures. The Worker never accepts an arbitrary destination URL.
+- Controlled `GET /api/demo/success`, `/api/demo/delay`, and `/api/demo/error` routes return HTTP 200 immediately, HTTP 200 after a programmed 750 ms wait, and HTTP 503, respectively. Responses are uncached JSON.
 - Each `POST /api/probes` receives a UUID request ID in the JSON result and `X-Request-ID` response header, including rejected requests. The result carries upstream status, fetch duration, and a stable error category.
 - Run a batch of three or five browser-direct/Worker-proxied pairs against the same selected endpoint. Each pair runs sequentially and is stored in D1.
 - Versioned D1 migrations and a `probe_samples` table with one row per request mode. Each row stores its timestamp, endpoint ID, mode, duration, status, and error category; Worker rows also store handler duration.
@@ -19,7 +20,9 @@ A small synthetic diagnostics dashboard for learning Cloudflare Workers and D1. 
 
 The hardened local release candidate was verified in a browser: both paths returned HTTP 200, and the result remained in D1-backed history after a page refresh. `npm run typecheck`, `npm run test`, and `npm run build` pass.
 
-This is **synthetic testing**, not passive monitoring of an existing API's real traffic. Browser timings are client-reported. Direct browser tests can fail because of CORS, and a difference between browser-direct and Worker-proxied durations does not isolate Worker overhead. The Worker fetch timing includes reading the response body. Worker handler timing is measured internally but is not shown as a precise CPU measurement.
+This is **synthetic testing**, not passive monitoring of an existing API's real traffic. Browser timings are client-reported. Direct browser tests can fail because of CORS, and a difference between browser-direct and Worker-proxied durations does not isolate Worker overhead. The Worker fetch timing includes reading the response body. Worker handler timing is measured internally but is not shown as a precise CPU measurement. For demo fixtures, the browser directly requests the app's Worker-hosted fixture, while the probe Worker fetches that same public URL. This is a controlled same-origin comparison, not an external upstream benchmark. The programmed delay and HTTP statuses are repeatable; measured latency can still vary.
+
+Cloudflare's `global_fetch_strictly_public` compatibility flag allows the probe Worker to fetch its own public fixture URL. The fixture route handles requests directly and never starts another probe. Local self-fetch has been verified; public deployment must still be checked after Cloudflare authentication.
 
 The latest-batch panel compares medians only from the pairs just run in this browser session; it clears on refresh. The persistent summary uses the selected endpoint's records within the 30 most recent comparisons returned by D1. Each median shows its own count of measured durations. Worker success rate is the percentage of those comparisons with an HTTP 2xx upstream response and no fetch error. The status breakdown groups Worker outcomes into 2xx, 3xx, 4xx, 5xx, and fetch errors. These rates and medians are directional when the sample size is small.
 
@@ -107,6 +110,6 @@ vitest.config.ts     Cloudflare Vitest runtime configuration
 
 ## Next improvements
 
-Add a controlled test endpoint with configurable delay/error responses and optional Cloudflare traces. Keep this README in sync as those features are implemented.
+Consider optional Cloudflare traces and a separate fixture Worker if an independent upstream is needed. Keep this README in sync as those features are implemented.
 
 See `RELEASE_PLAN.md` for the initial release gates and `RELEASE_LOG.md` for the entry included with each commit and the current release status.

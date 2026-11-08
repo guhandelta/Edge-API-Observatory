@@ -9,6 +9,7 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 - [x] Bound request bodies and response reads; reject unexpected request content types.
 - [x] Add Cloudflare rate limiting to the probe route and verify its 429 response in a Worker test.
 - [x] Add automated Worker tests covering validation, storage, and error paths.
+- [x] Add controlled success, delay, and error fixtures; verify all three Worker probe paths and a browser comparison against the error fixture locally.
 - [x] Run typecheck, tests, build, local migration verification, and browser smoke test with persistence after refresh.
 - [ ] Create the production D1 database and replace the placeholder database ID.
 - [ ] Apply the remote migration, deploy the Worker, and verify the public URL from a browser.
@@ -19,7 +20,7 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 1. Install locked project dependencies with `npm ci`, then authenticate the **project-local** Wrangler with the intended Cloudflare account. A bare global `wrangler` command is unnecessary. The current Wrangler login is expired; use `npx wrangler login --device` to avoid the localhost callback timeout.
 2. Create D1 database `edge-api-observatory`, update `wrangler.jsonc` with its returned ID, run `npm run types`, and commit that configuration change.
 3. Apply remote migrations and deploy. Confirm the Worker, D1 binding, rate-limit binding, and static assets are present.
-4. Run one public comparison, refresh the page, and confirm the result persists. Verify a rejected input. The rate-limit test covers the 429 path; the live limit is approximate, so a fixed number of requests is not a reliable assertion.
+4. Run one public comparison, refresh the page, and confirm the result persists. Verify the controlled success, delay, and HTTP 503 cases through the dashboard and check Worker self-fetch on the deployed URL. Verify a rejected input. The rate-limit test covers the 429 path; the live limit is approximate, so a fixed number of requests is not a reliable assertion.
 5. Update `ReadMe.md` with the live URL and `RELEASE_LOG.md` with the exact release outcome; commit and push them.
 6. Create and push the `v0.1.0` tag, then publish a GitHub release describing the feature set and measurement limits.
 

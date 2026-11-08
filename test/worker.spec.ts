@@ -1,15 +1,17 @@
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import worker from "../worker/index";
+import worker, { usableTraceId } from "../worker/index";
 
 /** Use the real D1 binding while controlling the rate-limit decision per test. */
-function testEnv(allowed = true): Parameters<typeof worker.fetch>[1] {
+function testEnv(allowed = true, traceConfig?: { accountId?: string; token?: string }): Parameters<typeof worker.fetch>[1] {
   const bindings = env as typeof env & { DB: D1Database };
   return {
     DB: bindings.DB,
     PROBE_RATE_LIMITER: {
       limit: async () => ({ success: allowed }),
     } as RateLimit,
+    CLOUDFLARE_ACCOUNT_ID: traceConfig?.accountId,
+    CLOUDFLARE_OBSERVABILITY_TOKEN: traceConfig?.token,
   };
 }
 
@@ -30,6 +32,92 @@ function validBody() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Worker API", () => {
+  it("normalizes disabled and usable trace IDs", () => {
+    expect(usableTraceId("0".repeat(32))).toBeNull();
+    expect(usableTraceId("a".repeat(32))).toBe("a".repeat(32));
+  });
+
+  it("correlates a probe with a custom-span trace ID in D1", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("ok")));
+    const created = await worker.fetch(probeRequest(validBody()), testEnv());
+    const run = await created.json() as { requestId: string; traceId: string | null };
+    const history = await worker.fetch(new Request("https://example.test/api/history?mode=worker_proxy&limit=100"), testEnv());
+    const rows = await history.json() as Array<{ requestId: string; traceId: string | null }>;
+    expect(rows.find((row) => row.requestId === run.requestId)?.traceId).toBe(run.traceId);
+  });
+
+  it("looks up only a saved run and distinguishes absent, unconfigured, and unstored traces", async () => {
+    const bindings = env as typeof env & { DB: D1Database };
+    const id = crypto.randomUUID();
+    const traceId = "a".repeat(32);
+    await bindings.DB.prepare(
+      `INSERT INTO probe_samples (id, request_id, observed_at, endpoint_id, request_mode,
+       fetch_duration_ms, handler_duration_ms, status, error_category, error_detail, trace_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(`${id}:worker`, id, new Date().toISOString(), "sample-post", "worker_proxy",
+      15, 22, 200, "none", null, traceId).run();
+    const url = `https://example.test/api/investigations/${id}`;
+    const invalid = await worker.fetch(new Request("https://example.test/api/investigations/bad"), testEnv());
+    const missing = await worker.fetch(new Request(`https://example.test/api/investigations/${crypto.randomUUID()}`), testEnv());
+    expect([invalid.status, missing.status]).toEqual([400, 404]);
+
+    const noAccount = await worker.fetch(new Request(url), testEnv());
+    const noToken = await worker.fetch(new Request(url), testEnv(true, { accountId: "account" }));
+    expect((await noAccount.json() as { status: string }).status).toBe("not_configured");
+    expect((await noToken.json() as { status: string }).status).toBe("not_configured");
+
+    await bindings.DB.prepare("UPDATE probe_samples SET trace_id = NULL WHERE request_id = ?").bind(id).run();
+    const unavailable = await worker.fetch(new Request(url), testEnv());
+    expect((await unavailable.json() as { status: string }).status).toBe("unavailable");
+    await bindings.DB.prepare("UPDATE probe_samples SET trace_id = ? WHERE request_id = ?").bind(traceId, id).run();
+
+    expect((await worker.fetch(new Request(url), testEnv(false, { accountId: "account", token: "token" }))).status).toBe(429);
+
+    const query = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { parameters: { filters: Array<{ value: string }> }; timeframe: { from: number; to: number } };
+      expect(String(_input)).toBe("https://api.cloudflare.com/client/v4/accounts/account/workers/observability/telemetry/query");
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer token" });
+      expect(body.parameters.filters[0].value).toBe(traceId);
+      expect(body.timeframe.to - body.timeframe.from).toBe(120_000);
+      return Response.json({ success: true, result: { events: { events: [
+        {},
+        { $metadata: { traceId: "b".repeat(32), spanName: "api.probe", spanId: "other" } },
+        { $metadata: { traceId, spanId: "probe-span", spanName: "api.probe", duration: 22 } },
+        { $metadata: { traceId, parentSpanId: "probe-span", spanName: "fetch", duration: 12 } },
+        { $metadata: { traceId, parentSpanId: "probe-span", spanName: "d1_batch", duration: 5 } },
+        { $metadata: { traceId, parentSpanId: "probe-span", spanName: "d1_run", duration: 2 } },
+        { $metadata: { traceId, parentSpanId: "other", spanName: "fetch", duration: 44 } },
+        { $metadata: { traceId: "b".repeat(32), parentSpanId: "probe-span", spanName: "fetch", duration: 99 } },
+        { $metadata: { traceId, parentSpanId: "probe-span", spanName: "custom", duration: 5 } },
+        { $metadata: { traceId, parentSpanId: "probe-span", spanName: "fetch", duration: -1 } },
+        { $metadata: { traceId, parentSpanId: "probe-span", spanName: "fetch", duration: "bad" } },
+        { $metadata: { traceId, parentSpanId: "probe-span", duration: 2 } },
+        {},
+      ] } } });
+    });
+    vi.stubGlobal("fetch", query);
+    const available = await worker.fetch(new Request(url), testEnv(true, { accountId: "account", token: "token" }));
+    const data = await available.json() as { status: string; spans: Array<{ name: string; durationMs: number }>; workerFetchDurationMs: number };
+    expect(data.status).toBe("available");
+    expect(data.workerFetchDurationMs).toBe(15);
+    expect(data.spans).toEqual([
+      { name: "fetch", durationMs: 12 }, { name: "d1_batch", durationMs: 5 }, { name: "d1_run", durationMs: 2 },
+    ]);
+    expect(query).toHaveBeenCalledOnce();
+
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ success: true, result: { events: { events: [] } } })));
+    const unstored = await worker.fetch(new Request(url), testEnv(true, { accountId: "account", token: "token" }));
+    expect((await unstored.json() as { status: string }).status).toBe("not_stored");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ success: true })));
+    expect((await (await worker.fetch(new Request(url), testEnv(true, { accountId: "account", token: "token" }))).json() as { status: string }).status).toBe("not_stored");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ success: true, result: {} })));
+    expect((await (await worker.fetch(new Request(url), testEnv(true, { accountId: "account", token: "token" }))).json() as { status: string }).status).toBe("not_stored");
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 503 })));
+    expect((await worker.fetch(new Request(url), testEnv(true, { accountId: "account", token: "token" }))).status).toBe(502);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ success: false })));
+    expect((await worker.fetch(new Request(url), testEnv(true, { accountId: "account", token: "token" }))).status).toBe(502);
+  });
   it("exposes only approved targets", async () => {
     const response = await worker.fetch(new Request("https://example.test/api/targets"), testEnv());
     expect(response.status).toBe(200);

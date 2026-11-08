@@ -112,3 +112,10 @@ This is a draft, not a published release. Add the live deployment URL and verifi
 - Extended Worker handler wall time from request entry through rate limiting, validation, upstream fetch, and the primary D1 batch commit. Persisted that measurement in the Worker sample; the timing-metadata update itself is outside the recorded interval.
 - Added a delayed-D1 integration assertion and UI/metric tests. Verified 24 Worker tests and 14 UI tests with 100% per-file statements, branches, functions, and lines; typecheck and production build pass. A local demo-success probe returned 42 ms upstream fetch and 108 ms handler time, with 108 ms confirmed in D1 history. A three-pair browser run displayed all four medians, including 38 ms Worker handler and 88 ms browser POST round trip.
 - Release impact: the timing model is complete for the local release candidate. Browser POST timing remains session-only; production deployment and public verification remain pending.
+
+### 2026-11-08 — `feat: correlate probes with Cloudflare traces` (this commit)
+
+- Enabled Workers tracing, attached each probe request ID to an `api.probe` custom span, and stored its trace ID in a new nullable D1 column and the paired API response.
+- Added a run-level investigation view and a bounded Worker lookup for Cloudflare fetch and D1 span durations. It distinguishes unavailable IDs, missing lookup configuration, and no stored trace, which can result from sampling, ingestion delay, or expiry.
+- Added Worker integration and React DOM cases for correlation, platform spans, missing traces, lookup errors, and limits. Verified typecheck, 100% per-file statements/branches/functions/lines in both suites, build, and local migration and route smoke tests. A local probe stored a nonzero trace ID; the local trace explorer showed the matching `api.probe` span and its child fetch/D1 spans.
+- Release impact: trace comparison is implemented locally; live Cloudflare telemetry retrieval remains a production release gate and requires account-scoped secrets.

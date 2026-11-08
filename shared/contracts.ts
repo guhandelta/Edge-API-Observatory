@@ -42,6 +42,8 @@ export interface ProbeSample {
   status: number | null;
   errorCategory: ProbeSampleErrorCategory;
   errorDetail: string | null;
+  /** Present on Worker rows when tracing supplies a nonzero ID. */
+  traceId: string | null;
 }
 
 /** Browser results are client-reported; Worker results are measured at the edge. */
@@ -49,6 +51,8 @@ export interface ProbeRun {
   /** The persisted run ID is also the request correlation ID. */
   id: string;
   requestId: string;
+  /** Correlates this probe with a Cloudflare trace; does not guarantee storage. */
+  traceId: string | null;
   targetId: string;
   createdAt: string;
   directDurationMs: number | null;
@@ -62,6 +66,22 @@ export interface ProbeRun {
   workerStatus: number | null;
   workerError: string | null;
   workerErrorCategory: ProbeErrorCategory;
+}
+
+/** One Cloudflare platform span from the selected probe trace. */
+export interface TraceSpan {
+  name: string;
+  durationMs: number;
+}
+
+/** A trace lookup is explicit about absent storage or missing configuration. */
+export interface TraceInvestigation {
+  requestId: string;
+  traceId: string | null;
+  workerFetchDurationMs: number | null;
+  workerHandlerDurationMs: number | null;
+  status: "available" | "not_stored" | "not_configured" | "unavailable";
+  spans: TraceSpan[];
 }
 
 /** Only these browser measurements may be submitted to the Worker. */

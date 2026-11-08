@@ -15,13 +15,15 @@ See [Investigation 001: controlled delay](docs/investigation-001-controlled-dela
 - Each `POST /api/probes` receives a UUID request ID in the JSON result and `X-Request-ID` response header, including rejected requests. The result carries upstream status, fetch duration, and a stable error category.
 - Run a batch of three or five browser-direct/Worker-proxied pairs against the same selected endpoint. Each pair runs sequentially and is stored in D1.
 - Versioned D1 migrations and a `probe_samples` table with one row per request mode. Each row stores its timestamp, endpoint ID, mode, duration, status, and error category; Worker rows also store handler duration through the primary D1 commit.
+- A custom `api.probe` span carries the probe request ID. The Worker records the span's trace ID in its D1 sample and probe response. Tracing is enabled explicitly in Wrangler; an ID does not guarantee that Cloudflare stored the trace.
+- Select **Investigate** on a recent run to compare app fetch and handler timings with Cloudflare `fetch` and `d1_*` span durations directly under that run's custom probe span. The view states when the trace ID is absent, lookup is not configured, or no stored trace was found (including sampling, ingestion delay, or expiry).
 - Dashboard with latest-batch medians for browser-direct fetch, Worker upstream fetch, Worker handler, and browser POST round trip; a recent runs table; a latency chart; Worker status breakdown; and Worker success rate. The latest batch and any history with fewer than ten comparisons are labeled as small samples.
 - A sun/light and crescent-moon/dark toggle with a muted light palette and a blue-violet-brown dark palette. The app uses the operating system preference until you choose a theme, then remembers that choice in local browser storage.
 - Probe requests accept only JSON and at most 2 KiB of input. Upstream bodies are read up to 64 KiB.
 - A Cloudflare rate-limit binding provides a shared anonymous budget of 10 probes per minute per Cloudflare location. The limit is approximate.
 - Worker unit and D1 integration tests cover the allowlist, invalid input, rate-limit response, persistence, oversized responses, and success, HTTP-error, timeout, and network-error categories. React DOM tests cover batch interactions, history and error states, theme preference, and bootstrap.
 
-The hardened local release candidate was verified in a browser: both paths returned HTTP 200, and the result remained in D1-backed history after a page refresh. `npm run typecheck`, `npm run test:coverage`, and `npm run build` pass.
+The local release candidate has been verified with controlled browser comparisons and D1-backed history. `npm run typecheck`, `npm run test:coverage`, and `npm run build` pass. Live Cloudflare trace retrieval still requires deployment and an account token.
 
 ### Test coverage
 
@@ -44,6 +46,7 @@ Send JSON such as `{"targetId":"sample-post","directDurationMs":null,"directStat
   "workerStatus": 200,
   "workerFetchDurationMs": 148,
   "workerHandlerDurationMs": 156,
+  "traceId": "32-character-hex-ID-or-null",
   "browserPostRoundTripMs": null,
   "workerErrorCategory": "none"
 }
@@ -59,7 +62,9 @@ The complete response also contains the persisted run `id`, timestamp, browser-r
 /api/history?endpointId=sample-post&mode=worker_proxy&limit=20
 ```
 
-Each row has `requestId`, `observedAt`, `endpointId`, `requestMode`, `fetchDurationMs`, `handlerDurationMs`, `status`, `errorCategory`, and `errorDetail`. Browser and Worker rows share a request ID. `GET /api/probes` continues to return up to 30 paired comparisons for the dashboard. Migration `0002_individual_probe_samples.sql` converts existing paired records into individual rows before removing the old table.
+Each row has `requestId`, `observedAt`, `endpointId`, `requestMode`, `fetchDurationMs`, `handlerDurationMs`, `status`, `errorCategory`, `errorDetail`, and nullable `traceId`. Browser and Worker rows share a request ID. `GET /api/probes` continues to return up to 30 paired comparisons for the dashboard. Migration `0002_individual_probe_samples.sql` converts existing paired records into individual rows before removing the old table.
+
+Migration `0003_probe_trace_id.sql` adds a nullable `traceId` to each history row. Only Worker rows receive it. Older rows remain readable with `null`. `GET /api/investigations/{requestId}` looks up a saved run, then returns its app timings and available Cloudflare fetch/D1 spans. A missing stored trace is reported as `not_stored`, not treated as proof of sampling: ingestion delay and retention expiry are also possible. Platform span intervals can overlap with app measurements and may not have identical start/stop boundaries.
 
 ## Requirements
 
@@ -79,6 +84,8 @@ npm run dev
 
 Open the URL printed by Vite. Local development uses a simulated D1 database. If the database is empty or the app reports a database error, apply the local migration again.
 
+Local runs record a trace ID when the runtime supplies one, but Cloudflare's production trace store is not available in the local emulator. The investigation view can still show the run's app timings and its explicit lookup state.
+
 ## Deploy
 
 1. Run `npx wrangler login --device` and complete the browser verification. Then confirm with `npx wrangler whoami`. The device flow avoids reliance on a short-lived localhost callback.
@@ -86,6 +93,8 @@ Open the URL printed by Vite. Local development uses a simulated D1 database. If
 3. Replace `local-edge-api-observatory` in `wrangler.jsonc` with the database ID returned by Cloudflare, then run `npm run types`.
 4. Apply remote migrations with `npm run db:migrate:remote`.
 5. Run `npm run deploy`.
+
+For live investigation lookups, add `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_OBSERVABILITY_TOKEN` as Worker secrets with `npx wrangler secret put NAME` for each name. Use an account-scoped token with Cloudflare's **Workers Observability Write** permission, which its telemetry query API currently requires. Keep these values out of Git. The public route only queries trace IDs already associated with stored probes and returns bounded timing fields. Without both secrets, the view reports `not_configured`. Cloudflare may also sample out or expire a trace even when the probe stores its trace ID.
 
 The placeholder database ID is only for local development; a remote deployment needs a real ID. This project has not been deployed yet.
 The rate limit is now present; it is approximate and local to each Cloudflare location, so it is suitable for a small portfolio demo rather than a strict global quota.
@@ -124,6 +133,6 @@ vitest.ui.config.ts  React DOM Vitest configuration
 
 ## Next improvements
 
-Consider optional Cloudflare traces and a separate fixture Worker if an independent upstream is needed. Keep this README in sync as those features are implemented.
+Consider a separate fixture Worker if an independent upstream is needed. Keep this README in sync as those features are implemented.
 
 See `RELEASE_PLAN.md` for the initial release gates and `RELEASE_LOG.md` for the entry included with each commit and the current release status.

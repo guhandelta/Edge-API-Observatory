@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { TARGETS, type CreateProbeRequest, type ProbeRun } from "../shared/contracts";
+import { TARGETS, type CreateProbeRequest, type ProbeRun, type TraceInvestigation } from "../shared/contracts";
 import { STATUS_BUCKETS, summarizeRuns } from "./metrics";
 import { applyTheme, type Theme } from "./theme";
 
@@ -103,6 +103,9 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [investigation, setInvestigation] = useState<TraceInvestigation | null>(null);
+  const [investigationError, setInvestigationError] = useState<string | null>(null);
+  const [investigating, setInvestigating] = useState(false);
   const target = TARGETS.find((item) => item.id === targetId)!;
 
   /** Switch the visual palette without interrupting a running probe. */
@@ -160,6 +163,21 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
     } finally {
       if (completed.length > 0) setLastBatch({ targetId, requested: batchSize, runs: completed });
       setRunning(false);
+    }
+  }
+
+  /** Load platform spans for one persisted run without exposing account credentials. */
+  async function openInvestigation(run: ProbeRun) {
+    setInvestigation(null);
+    setInvestigationError(null);
+    setInvestigating(true);
+    try {
+      const response = await fetch(`/api/investigations/${run.requestId}`);
+      setInvestigation(await readApi<TraceInvestigation>(response));
+    } catch (cause) {
+      setInvestigationError(cause instanceof Error ? cause.message : "Trace lookup failed.");
+    } finally {
+      setInvestigating(false);
     }
   }
 
@@ -244,7 +262,7 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
         {loading ? <p className="empty">Loading history…</p> : <HistoryChart runs={selectedRuns} />}
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Time</th><th>Target</th><th>Browser direct</th><th>Browser status</th><th>Worker fetch</th><th>Worker handler</th><th>Browser POST (session)</th><th>Worker status</th></tr></thead>
+            <thead><tr><th>Time</th><th>Target</th><th>Browser direct</th><th>Browser status</th><th>Worker fetch</th><th>Worker handler</th><th>Browser POST (session)</th><th>Worker status</th><th>Trace</th></tr></thead>
             <tbody>
               {selectedRuns.slice(0, 8).map((run) => (
                 <tr key={run.id}>
@@ -256,13 +274,33 @@ export default function App({ initialTheme }: { initialTheme: Theme }) {
                   <td>{formatMs(run.workerHandlerDurationMs)}</td>
                   <td>{formatMs(run.browserPostRoundTripMs)}</td>
                   <td>{run.workerError ?? run.workerStatus ?? "—"}</td>
+                  <td><button type="button" onClick={() => openInvestigation(run)}>Investigate</button></td>
                 </tr>
               ))}
-              {selectedRuns.length === 0 && <tr><td colSpan={8} className="empty">No measurements yet.</td></tr>}
+              {selectedRuns.length === 0 && <tr><td colSpan={9} className="empty">No measurements yet.</td></tr>}
             </tbody>
           </table>
         </div>
       </section>
+
+      {(investigation || investigationError || investigating) && <section className="panel investigation" aria-label="Trace investigation">
+        <h2>Trace investigation</h2>
+        {investigating && <p>Loading trace…</p>}
+        {investigationError && <p role="alert">{investigationError}</p>}
+        {investigation && <>
+          <p>Request ID: <code>{investigation.requestId}</code></p>
+          <p>Trace ID: <code>{investigation.traceId ?? "Unavailable"}</code></p>
+          <div className="trace-comparison">
+            <div>App upstream fetch <strong>{formatMs(investigation.workerFetchDurationMs)}</strong></div>
+            <div>App Worker handler <strong>{formatMs(investigation.workerHandlerDurationMs)}</strong></div>
+            {investigation.spans.map((span, index) => <div key={`${span.name}-${index}`}>Cloudflare {span.name} span <strong>{formatMs(span.durationMs)}</strong></div>)}
+          </div>
+          {investigation.status === "unavailable" && <p>No trace ID was recorded for this run.</p>}
+          {investigation.status === "not_configured" && <p>Cloudflare trace lookup is not configured. Add the account ID and Observability API token to compare spans.</p>}
+          {investigation.status === "not_stored" && <p>No stored trace was found. This request may have been sampled out, may still be ingesting, or may have expired.</p>}
+          {investigation.status === "available" && <p>App timings include response-body reading and application work; platform spans cover their own operations. Intervals may overlap.</p>}
+        </>}
+      </section>}
 
       <p className="footnote">These paths have different network routes. Their difference does not isolate Worker overhead. Browser POST timing is available only in this session; browser failures may reflect CORS restrictions.</p>
     </main>

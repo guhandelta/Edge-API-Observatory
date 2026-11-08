@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProbeRun } from "../../shared/contracts";
@@ -9,6 +9,7 @@ function run(id: string, overrides: Partial<ProbeRun> = {}): ProbeRun {
   return {
     id,
     requestId: id,
+    traceId: null,
     targetId: "sample-post",
     createdAt: "2026-11-08T12:00:00.000Z",
     directDurationMs: 10,
@@ -31,6 +32,58 @@ afterEach(() => {
 });
 
 describe("dashboard integration", () => {
+  it("compares app timings with Cloudflare fetch and D1 spans for one run", async () => {
+    let releaseLookup: ((response: Response) => void) | undefined;
+    const lookup = new Promise<Response>((resolve) => { releaseLookup = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === "/api/probes" ? Response.json([run("trace-run", { traceId: "a".repeat(32) })]) : lookup));
+    render(<App initialTheme="light" />);
+    const user = userEvent.setup();
+    await screen.findByRole("button", { name: "Investigate" });
+    await user.click(screen.getByRole("button", { name: "Investigate" }));
+    expect(screen.getByText("Loading trace…")).toBeTruthy();
+    releaseLookup!(Response.json({ requestId: "trace-run", traceId: "a".repeat(32),
+      workerFetchDurationMs: 8, workerHandlerDurationMs: 9, status: "available",
+      spans: [{ name: "fetch", durationMs: 7 }, { name: "d1_batch", durationMs: 3 }],
+    }));
+    const panel = await screen.findByRole("region", { name: "Trace investigation" });
+    expect(await within(panel).findByText(/Cloudflare d1_batch span/)).toBeTruthy();
+    expect(within(panel).getByText(/Cloudflare fetch span/)).toBeTruthy();
+    expect(within(panel).getByText(/App upstream fetch/)).toBeTruthy();
+    expect(within(panel).getByText(/Intervals may overlap/)).toBeTruthy();
+  });
+
+  it.each([
+    ["unavailable", "No trace ID was recorded"],
+    ["not_configured", "trace lookup is not configured"],
+    ["not_stored", "may have been sampled out"],
+  ])("explains the %s trace state", async (status, message) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input) === "/api/probes" ? Response.json([run("old")])
+        : Response.json({ requestId: "old", traceId: null, workerFetchDurationMs: null,
+          workerHandlerDurationMs: null, status, spans: [] })));
+    render(<App initialTheme="light" />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Investigate" }));
+    expect(await screen.findByText(new RegExp(message))).toBeTruthy();
+  });
+
+  it("reports API and transport errors during trace lookup", async () => {
+    let failure: "api" | "transport" = "api";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/probes") return Response.json([run("failed")]);
+      if (failure === "api") return Response.json({ error: "Trace API unavailable" }, { status: 502 });
+      throw "offline";
+    }));
+    render(<App initialTheme="light" />);
+    const user = userEvent.setup();
+    const button = await screen.findByRole("button", { name: "Investigate" });
+    await user.click(button);
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Trace API unavailable");
+    failure = "transport";
+    await user.click(button);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveProperty("textContent", "Trace lookup failed."));
+  });
   it("runs three and five same-target pairs and switches the saved theme", async () => {
     let nextId = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

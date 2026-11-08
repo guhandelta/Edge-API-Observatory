@@ -11,11 +11,13 @@ Target: **v0.1.0**, a public portfolio demo of synthetic browser-direct and Work
 - [x] Add automated Worker tests covering validation, storage, and error paths.
 - [x] Enforce 100% per-file statements, branches, functions, and lines for production TypeScript in Worker and UI suites; run the gate in CI.
 - [x] Measure browser `POST /api/probes` round trip in the current session and Worker handler time through the primary D1 commit; verify the D1-inclusive interval and maintain 100% coverage.
+- [x] Attach request IDs to custom spans, store probe trace IDs, and add an investigation view for app timings and Cloudflare fetch/D1 spans with explicit missing-trace states.
 - [x] Add controlled success, delay, and error fixtures; verify all three Worker probe paths and a browser comparison against the error fixture locally.
 - [x] Document a controlled-delay investigation with measured batches, an architecture diagram, and screenshots.
 - [x] Run typecheck, tests, build, local migration verification, and browser smoke test with persistence after refresh.
 - [ ] Create the production D1 database and replace the placeholder database ID.
 - [ ] Apply the remote migration, deploy the Worker, and verify the public URL from a browser.
+- [ ] Configure account-scoped Observability lookup secrets and verify a stored production trace and a missing-trace state in the investigation view.
 - [ ] Tag `v0.1.0` and publish release notes after the deployment is verified.
 
 ## Operational steps for deployment

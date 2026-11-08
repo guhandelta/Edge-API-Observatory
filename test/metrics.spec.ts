@@ -8,6 +8,7 @@ function run(id: string, direct: number | null, worker: number, status: number |
   return {
     id,
     requestId: id,
+    traceId: null,
     targetId: "sample-post",
     createdAt: "2026-11-07T12:00:00.000Z",
     directDurationMs: direct,

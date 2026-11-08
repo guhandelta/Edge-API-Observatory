@@ -1,3 +1,4 @@
+import { tracing } from "cloudflare:workers";
 import {
   TARGETS,
   type CreateProbeRequest,
@@ -6,12 +7,17 @@ import {
   type ProbeSample,
   type ProbeSampleErrorCategory,
   type RequestMode,
+  type TraceInvestigation,
+  type TraceSpan,
 } from "../shared/contracts";
 
 /** The D1 binding is configured in wrangler.jsonc. */
 interface Env {
   DB: D1Database;
   PROBE_RATE_LIMITER: RateLimit;
+  /** Optional read path for account telemetry; never expose this token to the browser. */
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_OBSERVABILITY_TOKEN?: string;
 }
 
 /** Keep upstream probes short so one dashboard action cannot tie up a Worker. */
@@ -19,6 +25,11 @@ const UPSTREAM_TIMEOUT_MS = 8_000;
 const MAX_REQUEST_BYTES = 2_048;
 const MAX_RESPONSE_BYTES = 64 * 1_024;
 const DEMO_DELAY_MS = 750;
+
+/** All-zero IDs mean tracing is disabled in this runtime. */
+export function usableTraceId(id: string): string | null {
+  return /^0+$/.test(id) ? null : id;
+}
 
 /** Fixed fixture routes make status outcomes repeatable without an open proxy. */
 async function demoResponse(pathname: string): Promise<Response> {
@@ -189,6 +200,7 @@ function mapSample(row: Record<string, unknown>): ProbeSample {
     status: row.status as number | null,
     errorCategory: row.error_category as ProbeSampleErrorCategory,
     errorDetail: row.error_detail as string | null,
+    traceId: row.trace_id as string | null,
   };
 }
 
@@ -207,6 +219,7 @@ function pairSamples(samples: ProbeSample[]): ProbeRun[] {
     return [{
       id: requestId,
       requestId,
+      traceId: worker.traceId,
       targetId: worker.endpointId,
       createdAt: worker.observedAt,
       directDurationMs: direct.fetchDurationMs,
@@ -223,7 +236,7 @@ function pairSamples(samples: ProbeSample[]): ProbeRun[] {
 }
 
 /** Run one approved probe and persist both perspectives as one comparison. */
-async function createProbe(request: Request, env: Env, requestId: string, handlerStarted: number): Promise<Response> {
+async function createProbe(request: Request, env: Env, requestId: string, handlerStarted: number, traceId: string | null): Promise<Response> {
   // This anonymous demo uses a shared per-location budget to bound total traffic.
   const allowance = await env.PROBE_RATE_LIMITER.limit({ key: "public-probes" });
   if (!allowance.success) {
@@ -239,6 +252,7 @@ async function createProbe(request: Request, env: Env, requestId: string, handle
   const run: ProbeRun = {
     id: requestId,
     requestId,
+    traceId,
     targetId: target.id,
     createdAt: new Date().toISOString(),
     directDurationMs: input.directDurationMs,
@@ -255,8 +269,8 @@ async function createProbe(request: Request, env: Env, requestId: string, handle
   const insert = env.DB.prepare(
     `INSERT INTO probe_samples (
       id, request_id, observed_at, endpoint_id, request_mode, fetch_duration_ms,
-      handler_duration_ms, status, error_category, error_detail
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      handler_duration_ms, status, error_category, error_detail, trace_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   // D1 executes the two inserts as one transaction, so history never has half a pair.
   await env.DB.batch([
@@ -265,12 +279,12 @@ async function createProbe(request: Request, env: Env, requestId: string, handle
       run.directDurationMs, null, run.directStatus,
       run.directError === "timeout" ? "timeout" : run.directError ? "cors_or_network_error"
         : errorCategory(run.directStatus, null),
-      run.directError,
+      run.directError, null,
     ),
     insert.bind(
       `${requestId}:worker`, requestId, run.createdAt, target.id, "worker_proxy",
       run.workerFetchDurationMs, run.workerHandlerDurationMs, run.workerStatus,
-      run.workerErrorCategory, run.workerError,
+      run.workerErrorCategory, run.workerError, traceId,
     ),
   ]);
 
@@ -282,6 +296,76 @@ async function createProbe(request: Request, env: Env, requestId: string, handle
   ).bind(run.workerHandlerDurationMs, requestId).run();
 
   return json(run, 201, requestId);
+}
+
+/** Query only the selected stored probe's trace and return bounded platform timings. */
+async function investigate(requestId: string, env: Env): Promise<Response> {
+  const row = await env.DB.prepare(
+    "SELECT request_id, trace_id, fetch_duration_ms, handler_duration_ms, observed_at FROM probe_samples WHERE request_id = ? AND request_mode = 'worker_proxy'",
+  ).bind(requestId).first<Record<string, unknown>>();
+  if (!row) return json({ error: "Probe not found." }, 404);
+
+  const traceId = row.trace_id as string | null;
+  const result: TraceInvestigation = {
+    requestId,
+    traceId,
+    workerFetchDurationMs: row.fetch_duration_ms as number | null,
+    workerHandlerDurationMs: row.handler_duration_ms as number | null,
+    status: "unavailable",
+    spans: [],
+  };
+  if (!traceId) return json(result);
+  if (!env.CLOUDFLARE_ACCOUNT_ID || !env.CLOUDFLARE_OBSERVABILITY_TOKEN) {
+    return json({ ...result, status: "not_configured" });
+  }
+
+  // Public investigation links must not create an unbounded account API workload.
+  const allowance = await env.PROBE_RATE_LIMITER.limit({ key: "public-trace-lookups" });
+  if (!allowance.success) return json({ error: "Trace lookup limit reached." }, 429);
+
+  // The account query is fixed to a D1-owned trace ID and a narrow time window.
+  // No browser input can alter the account, query, or Cloudflare destination.
+  const observed = Date.parse(String(row.observed_at));
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/workers/observability/telemetry/query`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.CLOUDFLARE_OBSERVABILITY_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        queryId: "edge-api-observatory-trace",
+        timeframe: { from: observed - 60_000, to: observed + 60_000 },
+        limit: 100,
+        parameters: {
+          view: "events",
+          filters: [{ key: "$metadata.traceId", operation: "eq", type: "string", value: traceId }],
+        },
+      }),
+      signal: AbortSignal.timeout(5_000),
+    },
+  );
+  if (!response.ok) return json({ error: "Cloudflare trace lookup failed." }, 502);
+  const data = await response.json() as {
+    success?: boolean;
+    result?: { events?: { events?: Array<{ $metadata?: {
+      traceId?: string; spanId?: string; parentSpanId?: string; spanName?: string; duration?: number
+    } }> } };
+  };
+  if (!data.success) return json({ error: "Cloudflare trace lookup failed." }, 502);
+  const events = data.result?.events?.events ?? [];
+  const probeSpanId = events.find((event) => event.$metadata?.traceId === traceId &&
+    event.$metadata.spanName === "api.probe")?.$metadata?.spanId;
+  const spans: TraceSpan[] = events
+    .map((event) => event.$metadata)
+    .filter((meta): meta is { traceId: string; parentSpanId: string; spanName: string; duration: number } =>
+      meta?.traceId === traceId && meta.parentSpanId === probeSpanId &&
+      typeof meta.spanName === "string" &&
+      (meta.spanName === "fetch" || meta.spanName.startsWith("d1_")) &&
+      typeof meta.duration === "number" && Number.isFinite(meta.duration) && meta.duration >= 0)
+    .map((meta) => ({ name: meta.spanName, durationMs: meta.duration }));
+  return json({ ...result, status: probeSpanId ? "available" : "not_stored", spans });
 }
 
 /** Serve recent comparisons for the dashboard. */
@@ -337,8 +421,18 @@ export default {
       if (url.pathname === "/api/history" && request.method === "GET") {
         return await listHistory(url, env);
       }
+      if (url.pathname.startsWith("/api/investigations/") && request.method === "GET") {
+        const id = url.pathname.slice("/api/investigations/".length);
+        if (!/^[0-9a-f-]{36}$/.test(id)) return json({ error: "Invalid request ID." }, 400);
+        return await investigate(id, env);
+      }
       if (url.pathname === "/api/probes" && request.method === "POST") {
-        return await createProbe(request, env, requestId!, handlerStarted);
+        return await tracing.enterSpan("api.probe", async (span) => {
+          span.setAttribute("probe.request_id", requestId!);
+          const id = span.spanContext().traceId;
+          const traceId = usableTraceId(id);
+          return createProbe(request, env, requestId!, handlerStarted, traceId);
+        });
       }
       return json({ error: "Route not found." }, 404);
     } catch (error) {
